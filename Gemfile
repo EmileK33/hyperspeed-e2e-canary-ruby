@@ -15,4 +15,5 @@ group :development, :test do
 gem 'rake'
 gem 'colorize'
 gem 'tilt'
+gem 'rainbow'
 end
