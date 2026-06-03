@@ -1,0 +1,43 @@
+# HyperSpeed build-plan runtime artifacts
+.bp-worktrees/
+run-state.json
+wave-*-failure-report.json
+escalation-*.json
+brief-quality-report.md
+brief-quality-report.json
+.bp-services.compose.yml
+
+# HyperSpeed build-plan — DO NOT PUBLISH the runner internals or briefs (#132 G).
+# CI needs only run-manifest.json + node-compat.eslint.config.mjs committed (plus
+# the workflow under .github/workflows/). Everything below is either proprietary
+# (the runner) or sensitive (every implementation brief) and must NOT land in a
+# repo that is (or may become) public. These globs keep them out wherever the
+# emitted build-plan/ directory lives in your tree.
+**/build-plan/run-build.mjs
+**/build-plan/run-build.md
+**/build-plan/README.md
+**/build-plan/setup-branch-protection.sh
+**/build-plan/lib/
+**/build-plan/section5-briefs/
+**/build-plan/autonomous-build-plan.md
+**/build-plan/Reference Material/
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment (never commit real secrets; DO commit the example templates —
+# projects ship and frequently TEST .env.example, so negate it: #136 defect 3).
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template

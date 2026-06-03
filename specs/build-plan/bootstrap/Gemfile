@@ -1,0 +1,16 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+ruby "3.3"
+
+gem "sinatra"
+gem "puma"
+gem "pg"
+gem "json"
+gem "rackup"
+
+group :development, :test do
+  gem "rspec"
+  gem "rack-test"
+end

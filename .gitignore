@@ -1,0 +1,8 @@
+vendor/bundle/
+.bundle/
+Gemfile.lock
+coverage/
+tmp/
+.bp-worktrees/
+build-plan/run-state.json
+build-plan/wave-*-failure-report.json

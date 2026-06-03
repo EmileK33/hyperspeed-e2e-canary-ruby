@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "generatedAt": "2026-06-03T05:24:09.889Z",
+  "integrationCmd": "bundle exec rspec tests/integration",
+  "waves": [
+    {
+      "kind": "feature",
+      "phase": 0,
+      "sessions": [
+        {
+          "id": "S0-A",
+          "brief": "section5-briefs/S0-A-Phase-0-harness-+-Sinatra-scaffold.md",
+          "ownedFiles": [
+            "Gemfile",
+            "spec/spec_helper.rb",
+            "tests/integration/harness_spec.rb",
+            "tests/integration/.keep",
+            "app/app.rb",
+            "config.ru",
+            ".rspec",
+            "Rakefile"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration",
+            "file": "tests/integration/harness_spec.rb"
+          },
+          "checkpoint": "Running `bundle exec rspec tests/integration` from a fresh clone with Postgres reachable boots Bookmarks::App, provisions the bookmarks and bookmark_tags tables once, and exits 0 with a passing harness spec that confirms unknown routes return 404 with a JSON `{ \"error\": ... }` body.",
+          "manualAcs": [],
+          "requiresHumanReview": false,
+          "complexity": "M"
+        }
+      ]
+    },
+    {
+      "kind": "integration",
+      "phase": "integration-0",
+      "test": {
+        "cmd": "bundle exec rspec tests/integration"
+      }
+    },
+    {
+      "kind": "feature",
+      "phase": 1,
+      "sessions": [
+        {
+          "id": "S1-A",
+          "brief": "section5-briefs/S1-A-Store-(Postgres-CRUD).md",
+          "ownedFiles": [
+            "app/store.rb",
+            "tests/integration/store_spec.rb"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration/store_spec.rb",
+            "file": "tests/integration/store_spec.rb"
+          },
+          "checkpoint": "Calling Store.new.create(url:, title:, tags:) returns a {id:, url:, title:, tags:} hash and the row is persisted in Postgres.",
+          "manualAcs": [],
+          "requiresHumanReview": false,
+          "complexity": "L"
+        }
+      ]
+    },
+    {
+      "kind": "integration",
+      "phase": "integration-1",
+      "test": {
+        "cmd": "bundle exec rspec tests/integration"
+      }
+    },
+    {
+      "kind": "feature",
+      "phase": 2,
+      "sessions": [
+        {
+          "id": "S2-A",
+          "brief": "section5-briefs/S2-A-Bookmarks-routes-(POSTGETDELETE).md",
+          "ownedFiles": [
+            "app/routes/bookmarks.rb",
+            "tests/integration/bookmarks_spec.rb"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration/bookmarks_spec.rb",
+            "file": "tests/integration/bookmarks_spec.rb"
+          },
+          "checkpoint": "POST /bookmarks, GET /bookmarks, and DELETE /bookmarks/:id are fully functional — a client can create a bookmark and receive 201, list all bookmarks and receive 200 with a JSON array, and delete a bookmark and receive 204 with the record removed.",
+          "manualAcs": [],
+          "requiresHumanReview": false,
+          "complexity": "M"
+        },
+        {
+          "id": "S2-B",
+          "brief": "section5-briefs/S2-B-Tags-routes-(POST-tag,-GET-tags).md",
+          "ownedFiles": [
+            "app/routes/tags.rb",
+            "tests/integration/tags_spec.rb"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration/tags_spec.rb",
+            "file": "tests/integration/tags_spec.rb"
+          },
+          "checkpoint": "POST /bookmarks/1/tags with {\"tag\":\"ruby\"} returns 200 with the full updated bookmark including tags:[\"ruby\"], and GET /tags returns [\"ruby\"], verified by bundle exec rspec tests/integration/tags_spec.rb exiting 0.",
+          "manualAcs": [],
+          "requiresHumanReview": false,
+          "complexity": "M"
+        }
+      ]
+    },
+    {
+      "kind": "integration",
+      "phase": "integration-2",
+      "test": {
+        "cmd": "bundle exec rspec tests/integration"
+      }
+    },
+    {
+      "kind": "feature",
+      "phase": 3,
+      "sessions": [
+        {
+          "id": "S3-A",
+          "brief": "section5-briefs/S3-A-Health-route.md",
+          "ownedFiles": [
+            "app/routes/health.rb",
+            "tests/integration/health_spec.rb"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration/health_spec.rb",
+            "file": "tests/integration/health_spec.rb"
+          },
+          "checkpoint": "GET /health returns 200 with body {\"status\":\"ok\"} and Content-Type: application/json on the running Canary Bookmarks API server.",
+          "manualAcs": [],
+          "requiresHumanReview": false,
+          "complexity": "S"
+        },
+        {
+          "id": "S3-B",
+          "brief": "section5-briefs/S3-B-Status-route-(brand-color).md",
+          "ownedFiles": [
+            "app/routes/status.rb",
+            "tests/integration/status_spec.rb"
+          ],
+          "test": {
+            "cmd": "bundle exec rspec tests/integration/status_spec.rb",
+            "file": "tests/integration/status_spec.rb"
+          },
+          "checkpoint": "GET /status returns HTTP 200 application/json with a body containing version (String), uptime_seconds (Numeric >= 0), and brand_color (String).",
+          "manualAcs": [
+            {
+              "id": "US-006-AC-2",
+              "text": "The response body contains brand_color with the exact value \"#ff5d8f\", matching the brand guideline."
+            }
+          ],
+          "requiresHumanReview": true,
+          "complexity": "S"
+        }
+      ]
+    },
+    {
+      "kind": "integration",
+      "phase": "integration-3",
+      "test": {
+        "cmd": "bundle exec rspec tests/integration"
+      }
+    }
+  ],
+  "requirements": {
+    "runtimes": [
+      {
+        "name": "ruby",
+        "version": "3.3"
+      }
+    ],
+    "hostBinaries": [
+      "git",
+      "gh",
+      "claude",
+      "bundle"
+    ],
+    "workspaceInstall": [
+      {
+        "cmd": "bundle install --path vendor/bundle",
+        "marker": "vendor/bundle"
+      }
+    ],
+    "projectManifest": {
+      "path": "Gemfile",
+      "ecosystem": "ruby",
+      "content": "# frozen_string_literal: true\n\nsource \"https://rubygems.org\"\n\nruby \"3.3\"\n\ngem \"sinatra\"\ngem \"puma\"\ngem \"pg\"\ngem \"json\"\ngem \"rackup\"\n\ngroup :development, :test do\n  gem \"rspec\"\n  gem \"rack-test\"\nend\n"
+    },
+    "services": [
+      {
+        "name": "postgres",
+        "image": "postgres:16",
+        "ports": [
+          "5432:5432"
+        ],
+        "env": {
+          "POSTGRES_USER": "postgres",
+          "POSTGRES_PASSWORD": "postgres",
+          "POSTGRES_DB": "canary_test"
+        },
+        "mechanism": "native"
+      }
+    ]
+  },
+  "projectManifestStub": {
+    "ecosystem": "ruby",
+    "path": "Gemfile",
+    "content": "# frozen_string_literal: true\n\nsource \"https://rubygems.org\"\n\nruby \"3.3\"\n\ngem \"sinatra\"\ngem \"puma\"\ngem \"pg\"\ngem \"json\"\ngem \"rackup\"\n\ngroup :development, :test do\n  gem \"rspec\"\n  gem \"rack-test\"\nend\n",
+    "seedInstallCmd": "bundle lock",
+    "lockfile": "Gemfile.lock",
+    "dependencyCount": 0
+  },
+  "intendedBuildModel": "claude-sonnet-4-6"
+}
