@@ -668,6 +668,13 @@ const HOST_BIN_HINTS = {
  */
 export async function isBinaryOnPath(name, exec = runProcess) {
   if (!name || typeof name !== 'string') return false;
+  // An explicit path (not a bare command name) — e.g. HS_CLAUDE_CLI set to an
+  // absolute binary like process.execPath. `where`/`command -v` only resolve
+  // BARE names against PATH; on win32 `where.exe <abs-path>` fails outright. So
+  // for a path, check the file exists directly (cross-platform).
+  if (name.includes('/') || name.includes('\\')) {
+    try { return fssync.statSync(name).isFile(); } catch { return false; }
+  }
   if (process.platform === 'win32') {
     const r = await exec('where.exe', [name]);
     return r.exitCode === 0 && r.stdout.trim().length > 0;
