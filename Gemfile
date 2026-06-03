@@ -12,7 +12,4 @@ gem 'pg', '~> 1.5'
 group :development, :test do
   gem 'rspec', '~> 3.13'
   gem 'rack-test', '~> 2.1'
-gem 'rake'
-gem 'rake'
-gem 'rake'
 end
