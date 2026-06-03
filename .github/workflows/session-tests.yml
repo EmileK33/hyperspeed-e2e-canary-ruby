@@ -1,0 +1,19 @@
+name: Session tests
+# Ruby canary CI (#144). Dual-trigger: push covers session branches even when
+# pull_request webhooks drop during parallel-PR bursts. pg ships precompiled
+# gems so no libpq build is needed.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['bp/**']
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - run: bundle exec rspec tests/integration
