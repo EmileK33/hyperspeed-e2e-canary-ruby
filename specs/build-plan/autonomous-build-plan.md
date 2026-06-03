@@ -1,6 +1,6 @@
 # Autonomous Build Plan
 
-Generated: 2026-06-03T05:24:09.887Z
+Generated: 2026-06-03T11:48:19.677Z
 
 ## Section 1 — Distilled Specification
 
@@ -22,12 +22,12 @@ See: `Reference Material/section4-mermaid-diagram.md`
 
 Individual session briefs (one per session):
 
-- **S0-A**: `section5-briefs/S0-A-Phase-0-harness-+-Sinatra-scaffold.md`
-- **S1-A**: `section5-briefs/S1-A-Store-(Postgres-CRUD).md`
-- **S2-A**: `section5-briefs/S2-A-Bookmarks-routes-(POSTGETDELETE).md`
-- **S2-B**: `section5-briefs/S2-B-Tags-routes-(POST-tag,-GET-tags).md`
-- **S3-A**: `section5-briefs/S3-A-Health-route.md`
-- **S3-B**: `section5-briefs/S3-B-Status-route-(brand-color).md`
+- **S0-A**: `section5-briefs/S0-A-Scaffold-+-Integration-Harness.md`
+- **S1-A**: `section5-briefs/S1-A-Bookmark-Store-(Postgres).md`
+- **S2-A**: `section5-briefs/S2-A-Bookmarks-CRUD-Routes.md`
+- **S2-B**: `section5-briefs/S2-B-Tag-Routes.md`
+- **S2-C**: `section5-briefs/S2-C-Health-Route.md`
+- **S2-D**: `section5-briefs/S2-D-Status-Route-(brand_color).md`
 
 ## Section 6 — Shared File Ownership Table
 
@@ -39,7 +39,7 @@ See: `Reference Material/section7-build-summary.md`
 
 ### Estimated cost
 
-Based on 6 session(s) (2×S, 3×M, 1×L) at `claude-sonnet-4-6`: **~$6.00–$12.00**.
+Based on 6 session(s) (2×S, 4×M, 0×L) at `claude-sonnet-4-6`: **~$5.00–$10.00**.
 
 This is a generator estimate based on session complexity and the manifest's `intendedBuildModel`. Actual cost depends on prompt size, retries, and per-session work. Use `--max-cost N` to enforce a hard cap.
 

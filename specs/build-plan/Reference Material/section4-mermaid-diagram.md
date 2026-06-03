@@ -1,40 +1,40 @@
 ```mermaid
 graph TD
 
-subgraph Phase0["Phase 0: Infrastructure"]
-    S0A["S0-A: Phase 0 harness + Sinatra scaffold (M)"]
+subgraph Phase0["Phase 0 — Infrastructure"]
+    S0A["S0-A: Scaffold + Integration Harness"]
 end
 
-GATE0["Gate 0→1\nRequired: S0-A merged, harness spec green\nNon-blocking: none"]
+GATE01["🔒 Gate 0→1\nRequired: S0-A\nrspec smoke spec green\nGemfile has all 4 gems\napp/app.rb glob-requires routes\nNo non-blocking sessions"]
 
-subgraph Phase1["Phase 1: Backend Store"]
-    S1A["S1-A: Store — Postgres CRUD (L)"]
+subgraph Phase1["Phase 1 — Backend Store"]
+    S1A["S1-A: Bookmark Store (Postgres)"]
 end
 
-GATE1["Gate 1→2\nRequired: S1-A merged, store specs green\nNon-blocking: S3-A, S3-B (early-started)"]
+GATE12["🔒 Gate 1→2\nRequired: S1-A\nStore#create/#all/#find/#delete defined\nstore_spec.rb green\nNo non-blocking sessions"]
 
-subgraph Phase2["Phase 2: Route Layer"]
-    S2A["S2-A: Bookmarks routes POST/GET/DELETE (M)"]
-    S2B["S2-B: Tags routes POST/GET (M)"]
+subgraph Phase2["Phase 2 — Routes"]
+    S2A["S2-A: Bookmarks CRUD Routes"]
+    S2B["S2-B: Tag Routes"]
+    S2C["S2-C: Health Route"]
+    S2D["S2-D: Status Route (brand_color)"]
 end
 
-GATE2["Gate 2→3\nRequired: S2-A + S2-B merged\nNon-blocking: S3-A, S3-B already running"]
+GATEFINAL["🔒 Final Gate\nRequired: S2-A, S2-B, S2-C, S2-D\nFull rspec integration suite green\nManual sign-off: GET /status → brand_color #ff5d8f"]
 
-subgraph Phase3["Phase 3: Utility Routes"]
-    S3A["S3-A: Health route (S)"]
-    S3B["S3-B: Status route — brand color (S)"]
-end
+S0A --> GATE01
+GATE01 --> S1A
+S1A --> GATE12
+GATE12 --> S2A
+GATE12 --> S2B
+GATE12 --> S2C
+GATE12 --> S2D
 
-S0A --> GATE0
-GATE0 --> S1A
-S1A --> GATE1
-GATE1 --> S2A
-GATE1 --> S2B
-S2A --> GATE2
-S2B --> GATE2
-GATE2 --> S3A
-GATE2 --> S3B
+S0A -.->|"early start allowed"| S2C
+S0A -.->|"early start allowed"| S2D
 
-S0A -.->|"early start allowed"| S3A
-S0A -.->|"early start allowed"| S3B
+S2A --> GATEFINAL
+S2B --> GATEFINAL
+S2C --> GATEFINAL
+S2D --> GATEFINAL
 ```

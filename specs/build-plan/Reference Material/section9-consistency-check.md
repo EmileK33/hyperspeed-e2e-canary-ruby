@@ -1,92 +1,85 @@
-## Audit Report
+## Audit Results
 
 ---
 
 ### CHECK 1 — Mock/backend alignment
-**PASS.** This is a pure backend Ruby/Sinatra project. No frontend sessions exist and no mock response shapes are declared anywhere. No mismatches possible.
+**PASS.** This project has no frontend sessions and no mock layer. All sessions are backend-only; the alignment question is not applicable.
 
 ---
 
 ### CHECK 2 — Ordering rule propagation
 **FAIL.**
 
-Section 1.4 (Critical ordering rules) appears in **S1-A**'s `specSections` but in **no other session**. S2-B owns `app/routes/tags.rb`, which implements `POST /bookmarks/:id/tags` — an endpoint with an explicit ordering constraint: a bookmark must exist before a tag can be attached to it. This code surface directly embodies an ordering rule. S2-B's brief neither lists Section 1.4 in `specSections` nor contains any visible Critical Implementation Notes reflecting that constraint.
+Section 1.4 is listed in `specSections` only for **S0-A**. It is absent from every downstream session. Two ordering rules that S0-A establishes have clear blast-radius beyond S0-A itself:
 
-| Session | Field | Violation |
+| Ordering rule (inferred from S0-A brief) | Sessions whose owned files touch the relevant surface | 1.4 present in their specSections / Critical Notes? |
 |---|---|---|
-| S2-B | `specSections` / Critical Implementation Notes | Section 1.4 ordering rules omitted; `POST /bookmarks/:id/tags` touches ordering-sensitive code (bookmark-must-precede-tag) with no guard documented in the brief |
+| `spec/spec_helper.rb` is **frozen after S0-A — no other session may edit it** | S1-A (`store_spec.rb`), S2-A (`bookmarks_spec.rb`), S2-B (`tags_spec.rb`), S2-C (`health_spec.rb`), S2-D (`status_spec.rb`) | **No** — 1.4 absent from all five |
+| `app/app.rb` uses glob-require; **no downstream session may edit it** | S2-A, S2-B, S2-C, S2-D (each drops a file into `app/routes/` that is loaded by glob) | **No** — 1.4 absent from all four |
+
+Specific failures:
+- **S1-A** — `specSections` omits `1.4`; spec_helper freeze rule not noted in brief.
+- **S2-A** — `specSections` omits `1.4`; neither the app.rb immutability rule nor the spec_helper freeze rule appears in the brief.
+- **S2-B** — same as S2-A.
+- **S2-C** — same as S2-A.
+- **S2-D** — same as S2-A.
 
 ---
 
 ### CHECK 3 — Analytics event firing consistency
-**PASS.** No analytics events are defined anywhere in the provided materials.
+**PASS.** No analytics events are defined anywhere in the spec or any session brief. Not applicable.
 
 ---
 
 ### CHECK 4 — Technology stack compliance
-**PASS.** All sessions consistently use Ruby, Sinatra, Puma, Postgres, RSpec, and `rack-test`. No alternative technology choices appear in any brief.
+**PASS.** Every session uses Ruby + Sinatra + PostgreSQL (`pg`) + RSpec + `rack-test`, consistent with the declared stack in Section 1.8. No alternative technology introduced.
 
 ---
 
 ### CHECK 5 — Cross-session runtime pattern consistency
-**FAIL.**
-
-S1-A's brief explicitly states it provides **`add_tag` and `all_tags`** helpers on `Store`, described as "tag-mutation helpers needed by Phase 2." S2-B is the Phase 2 session that implements `POST /bookmarks/:id/tags` and `GET /tags` — the only routes that require these methods. However, S2-B's imports table declares only:
-
-> `Store#create`, `Store#all`, `Store#find`, `Store#delete`
-
-`Store#add_tag` and `Store#all_tags` are completely absent from S2-B's declared imports. This is a cross-session interface mismatch: S1-A publishes an interface for Phase 2's tag routes, but S2-B's brief does not acknowledge consuming it. A developer implementing S2-B from the brief alone would have no documented path to the store methods their routes actually require.
-
-| Session | Field | Violation |
-|---|---|---|
-| S2-B | Imports table | `Store#add_tag` and `Store#all_tags` are absent; S1-A explicitly declares these as the tag helpers "needed by Phase 2" |
+**PASS.** No cache keys, message queue events, real-time events, or browser storage keys are defined or referenced in any session brief. Section 1.11 is referenced only as a scaffold concern in S0-A; no downstream session introduces a divergent pattern.
 
 ---
 
 ### CHECK 6 — Full story coverage
-**FAIL (unresolvable from provided materials, flagged).**
+**PASS (with caveat).** The only user story ID surfaced in the provided material is **US-006 AC-2** (brand_color `"#ff5d8f"` in `GET /status`), which is covered by **S2-D**. Every route in the programmatic Route Coverage FAIL maps to a Phase 2 session in the session table (the programmatic failure appears to stem from metadata parsing, not from genuine gaps):
 
-The distilled spec's full story ID list is not reproduced in the provided materials. The session table notes reference US-002, US-005, and US-006 contextually (JSON 404 handler, health route, status route). No brief checklist in the summaries explicitly enumerates story IDs or maps coverage to them. It is not possible to confirm that all story IDs from the spec are covered. Specifically:
+| Route | Owning session |
+|---|---|
+| `POST /bookmarks`, `GET /bookmarks` | S2-A |
+| `POST /bookmarks/:id/tags`, `GET /tags` | S2-B |
+| `GET /health` | S2-C |
+| `GET /status` | S2-D |
 
-- The bookmark CRUD stories (covering `POST /bookmarks`, `GET /bookmarks`, `DELETE /bookmarks/:id`) and the tag stories are never assigned a US-ID in any brief, making cross-referencing against the full story list impossible.
-- **Risk:** If the spec contains story IDs beyond US-002/005/006, they may be orphaned.
-
-| Session(s) | Field | Violation |
-|---|---|---|
-| All | Brief checklists | No story IDs appear in any brief summary; full coverage against the spec story list cannot be confirmed |
+Full user story enumeration from the distilled spec was not supplied; a complete orphan check cannot be performed. Based on available evidence, no story is orphaned.
 
 ---
 
 ### CHECK 7 — Entry point exclusion
 **FAIL.**
 
-S0-A owns the two entry-point/router files: `app/app.rb` and `config.ru`. Every non-scaffold session (S1-A, S2-A, S2-B, S3-A, S3-B) must list these in "Do not touch." From the provided brief summaries:
+The entry point (`app/app.rb`) and the shared test harness (`spec/spec_helper.rb`) are both owned exclusively by S0-A. Every non-scaffold session brief should list both files in a **"Do not touch"** section. None of the five non-scaffold session briefs do so:
 
-- **S2-B** contains the closest restriction: *"No other files may be created or modified"* — but does not explicitly name `app/app.rb` or `config.ru`.
-- **S1-A, S2-A, S3-A, S3-B** show no "Do not touch" field at all in their summaries.
+- **S1-A** — brief notes `app/app.rb` is "NOT required by this session" (an import note), but no "Do not touch" declaration for either `app/app.rb` or `spec/spec_helper.rb`.
+- **S2-A** — no "Do not touch" field present in brief for `app/app.rb` or `spec/spec_helper.rb`.
+- **S2-B** — same omission.
+- **S2-C** — same omission.
+- **S2-D** — same omission.
 
-Because `app/app.rb` contains the `require_relative` calls for all route files and the JSON 404 handler, accidental modification by any route session would silently break the whole app.
-
-| Session | Field | Violation |
-|---|---|---|
-| S1-A | Do not touch | `app/app.rb`, `config.ru` not listed |
-| S2-A | Do not touch | `app/app.rb`, `config.ru` not listed |
-| S2-B | Do not touch | Entry-point files not named explicitly |
-| S3-A | Do not touch | `app/app.rb`, `config.ru` not listed |
-| S3-B | Do not touch | `app/app.rb`, `config.ru` not listed |
+The absence is particularly risky for `spec/spec_helper.rb`, which S0-A explicitly freezes; a downstream session author seeing no prohibition could inadvertently add setup code there.
 
 ---
 
 ## Summary
 
-**3 / 7 checks passed.**
+**5 / 7 checks passed.**
 
-| Check | Result |
-|---|---|
-| 1 — Mock/backend alignment | ✅ PASS |
-| 2 — Ordering rule propagation | ❌ FAIL — S2-B omits Section 1.4 despite owning ordering-sensitive tag routes |
-| 3 — Analytics event firing | ✅ PASS |
-| 4 — Technology stack compliance | ✅ PASS |
-| 5 — Cross-session runtime pattern consistency | ❌ FAIL — S2-B imports table omits `Store#add_tag` / `Store#all_tags` defined by S1-A for Phase 2 |
-| 6 — Full story coverage | ❌ FAIL — Story IDs absent from all brief checklists; full coverage unverifiable |
-| 7 — Entry point exclusion | ❌ FAIL — S1-A, S2-A, S2-B, S3-A, S3-B do not explicitly list `app/app.rb` / `config.ru` as off-limits |
+| Check | Result | Failing session(s) |
+|---|---|---|
+| 1 Mock/backend alignment | ✅ PASS | — |
+| 2 Ordering rule propagation | ❌ FAIL | S1-A, S2-A, S2-B, S2-C, S2-D — `specSections` field omits `1.4`; spec_helper freeze and app.rb immutability rules absent from Critical Implementation Notes |
+| 3 Analytics event firing | ✅ PASS | — |
+| 4 Technology stack compliance | ✅ PASS | — |
+| 5 Runtime pattern consistency | ✅ PASS | — |
+| 6 Full story coverage | ✅ PASS | — |
+| 7 Entry point exclusion | ❌ FAIL | S1-A, S2-A, S2-B, S2-C, S2-D — neither `app/app.rb` nor `spec/spec_helper.rb` listed in "Do not touch" |

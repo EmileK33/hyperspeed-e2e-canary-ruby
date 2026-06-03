@@ -611,6 +611,8 @@ export function formatFailureReport(input) {
       worktreePath: f.state.worktreePath,
       error: f.state.error,
       stdoutTail: f.stdoutTail,
+      // #116: isolated store(s) RETAINED for debugging (dropped only on success).
+      ...(f.state.isolatedStores?.length ? { isolatedStores: f.state.isolatedStores } : {}),
     })),
   };
 }
@@ -1273,6 +1275,267 @@ export function applyServiceConnectionEnv(services, env = process.env) {
     if (env[k] === undefined || env[k] === '') { env[k] = v; applied.push(k); }
   }
   return { applied };
+}
+
+// ─── #116: per-session store isolation ────────────────────────────────────────
+//
+// The wave runner spawns concurrent feature sessions that each run their
+// integration test against a backing store. With ONE shared fixture DB, a
+// session's `TRUNCATE … CASCADE` cleanup races a sibling's in-flight insert (the
+// canary's `leases_property_id_fkey` FK violation: a property created by S2-B,
+// deleted by S2-A's TRUNCATE mid-test). The spine closes this by giving each
+// concurrent session its OWN store instance + a per-session connection env — or,
+// when isolation is impossible, SERIALIZING the wave so correctness is never
+// sacrificed (only parallelism degrades). This honors validateSharedResource-
+// Coordination (#141): a brief declaring `sharedResources[{ kind:'database',
+// coordination:'isolated-per-worker' }]` is now satisfied by the runner, closing
+// the detect-but-still-run gap (#138 tenet 1).
+//
+// Local-runner only: CI already isolates each session PR's job in its own fresh
+// `services:` container. Code-under-test reads `DATABASE_URL`/`REDIS_URL`; the
+// store NAME differs per session but code never hardcodes it, so isolation is
+// transparent — no session-code or CI change.
+
+/** Index the declared services by image family (first writer wins per kind). */
+export function servicesByKind(services) {
+  const map = new Map();
+  for (const svc of services ?? []) {
+    const kind = serviceKind(svc?.image);
+    if (kind && !map.has(kind)) map.set(kind, svc);
+  }
+  return map;
+}
+
+/** Map a shared-resource declaration to the declared service kind that backs it,
+ *  or null when nothing matches. A `database` resource binds to the first
+ *  declared SQL/document engine; a `cache` resource binds to redis. Other kinds
+ *  (queue/broker/filesystem/other) are not isolatable by this seam → null. */
+export function resourceBackingKind(resource, byKind) {
+  if (!resource) return null;
+  if (resource.kind === 'database') {
+    for (const k of ['postgres', 'mysql', 'mongo']) if (byKind.has(k)) return k;
+    return null;
+  }
+  if (resource.kind === 'cache') return byKind.has('redis') ? 'redis' : null;
+  return null;
+}
+
+/** The default database name a fixture service ships with, per kind. */
+function baseDbForService(kind, svc) {
+  const e = svc?.env ?? {};
+  if (kind === 'postgres') return e.POSTGRES_DB ?? e.POSTGRES_USER ?? 'postgres';
+  if (kind === 'mysql') return e.MYSQL_DATABASE ?? 'app';
+  if (kind === 'mongo') return e.MONGO_INITDB_DATABASE ?? 'app';
+  return 'app';
+}
+
+/** Deterministic, identifier-safe session store name: `<base>_<runid>_<sid>`,
+ *  lowercased, non-alnum → `_`, capped to 60 chars (under Postgres's 63-byte
+ *  identifier limit). Deterministic per (base, runId, sessionId) so a same-run
+ *  retry targets the same name and the `DROP IF EXISTS` makes it clean. Pure. */
+export function sessionStoreName(baseDb, runId, sessionId) {
+  const safe = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const base = safe(baseDb) || 'app';
+  return `${base}_${safe(runId)}_${safe(sessionId)}`.slice(0, 60);
+}
+
+/** Swap the database path segment of a connection URL. Returns the original on
+ *  parse failure (the override also sets the dedicated vars as a backstop). Pure. */
+export function withUrlDatabase(url, dbName) {
+  try { const u = new URL(url); u.pathname = `/${dbName}`; return u.toString(); }
+  catch { return url; }
+}
+
+/** Point a redis URL at a numbered logical DB (`redis://host:port` → `…/<n>`). Pure. */
+export function withRedisDb(url, n) {
+  try { const u = new URL(url); u.pathname = `/${n}`; return u.toString(); }
+  catch { return url; }
+}
+
+/** Build the per-session connection-env OVERRIDE for one isolated store. Unlike
+ *  applyServiceConnectionEnv (non-clobbering), these keys MUST overwrite the
+ *  already-applied global ones, so the caller merges them LAST onto process.env.
+ *  Pure given the store's service declaration. */
+export function sessionStoreEnvOverride(store) {
+  const base = deriveServiceConnectionEnv([store.service]);
+  const out = {};
+  if (store.kind === 'postgres') {
+    const url = withUrlDatabase(base.DATABASE_URL, store.dbName);
+    out.DATABASE_URL = url; out.POSTGRES_URL = url; out.PGDATABASE = store.dbName;
+  } else if (store.kind === 'mysql') {
+    const url = withUrlDatabase(base.DATABASE_URL, store.dbName);
+    out.DATABASE_URL = url; out.MYSQL_URL = url;
+  } else if (store.kind === 'mongo') {
+    const url = withUrlDatabase(base.DATABASE_URL, store.dbName);
+    out.DATABASE_URL = url; out.MONGO_URL = url; out.MONGODB_URI = url;
+  } else if (store.kind === 'redis') {
+    out.REDIS_URL = withRedisDb(base.REDIS_URL, store.redisDb);
+  }
+  return out;
+}
+
+/** One-line human label for a store, used in logs + the failure report. */
+export function describeStore(store) {
+  return store.kind === 'redis' ? `${store.kind}/db${store.redisDb}` : `${store.kind}:${store.dbName}`;
+}
+
+/**
+ * Decide whether a feature wave needs per-session store isolation, and if so
+ * resolve each session's store plan. PURE — no docker, no env mutation.
+ *
+ *   - 'shared'     — no isolated-per-worker resource, or at most one such session
+ *                    can run at a time (effective concurrency < 2): no race, keep
+ *                    the global shared env (current behavior).
+ *   - 'isolated'   — ≥2 isolation-needing sessions can run together and every
+ *                    resource resolves to a provisionable store: each session
+ *                    gets a `{ env, stores }` plan in `plans`.
+ *   - 'serialized' — ≥2 could race but isolation is impossible (cannot reach the
+ *                    fixture stack, an unmatched resource kind, or >16 sessions
+ *                    needing a Redis logical DB): the caller forces concurrency 1
+ *                    so the shared env is safe (one session at a time). `reason`
+ *                    explains why; correctness holds, only parallelism degrades.
+ *
+ * @returns {{ mode:'shared'|'isolated'|'serialized', reason?:string, plans:Map<string, { env:Record<string,string>, stores:object[] }> }}
+ */
+export function planStoreIsolation(wave, services, opts = {}) {
+  const { concurrencyLimit = 0, runId = 'run', canProvision = true } = opts;
+  const byKind = servicesByKind(services);
+  const sessions = wave?.sessions ?? [];
+  const empty = () => new Map();
+
+  // Sessions declaring an isolated-per-worker database/cache resource. Other
+  // coordination contracts (idempotent / advisory-lock / run-once) are honored
+  // by code/the harness, not by the spine, so they keep the shared env.
+  const needs = [];
+  for (const s of sessions) {
+    const resources = (s.sharedResources ?? []).filter(
+      r => r && r.coordination === 'isolated-per-worker' && (r.kind === 'database' || r.kind === 'cache'),
+    );
+    if (resources.length) needs.push({ session: s, resources });
+  }
+  if (needs.length === 0) return { mode: 'shared', plans: empty() };
+
+  // How many isolation-needing sessions can be hot at once? 0/∞ limit ⇒ all.
+  const effLimit = (!concurrencyLimit || concurrencyLimit <= 0 || !Number.isFinite(concurrencyLimit))
+    ? needs.length : concurrencyLimit;
+  if (Math.min(effLimit, needs.length) < 2) return { mode: 'shared', plans: empty() };
+
+  // ≥2 can race → must isolate or serialize. Can we reach the stack to provision?
+  if (!canProvision) {
+    return {
+      mode: 'serialized',
+      reason: 'cannot reach the fixture stack to provision per-session stores (HS_SKIP_FIXTURE_SERVICES or stack not up)',
+      plans: empty(),
+    };
+  }
+
+  // Resolve a backing service for every needed resource; an unmatched one is
+  // unisolatable → serialize the whole wave.
+  const resolved = [];
+  for (const { session, resources } of needs) {
+    const stores = [];
+    for (const r of resources) {
+      const k = resourceBackingKind(r, byKind);
+      if (!k) {
+        return {
+          mode: 'serialized',
+          reason: `session ${session.id} resource "${r.name}" (${r.kind}) has no declared backing service to isolate`,
+          plans: empty(),
+        };
+      }
+      stores.push({ resourceName: r.name, serviceKind: k, service: byKind.get(k) });
+    }
+    resolved.push({ session, stores });
+  }
+
+  // Build plans, assigning Redis logical-DB slots (0-15). More Redis-isolated
+  // sessions than slots ⇒ serialize (a numbered DB per session is impossible).
+  const plans = empty();
+  let redisSlot = 0;
+  for (const { session, stores } of resolved) {
+    const planStores = [];
+    const env = {};
+    for (const st of stores) {
+      if (st.serviceKind === 'redis') {
+        if (redisSlot > 15) {
+          return {
+            mode: 'serialized',
+            reason: 'more than 16 sessions need an isolated Redis logical DB (only 0-15 exist)',
+            plans: empty(),
+          };
+        }
+        const store = { kind: 'redis', service: st.service, redisDb: redisSlot, resourceName: st.resourceName };
+        redisSlot += 1;
+        Object.assign(env, sessionStoreEnvOverride(store));
+        planStores.push(store);
+      } else {
+        const dbName = sessionStoreName(baseDbForService(st.serviceKind, st.service), runId, session.id);
+        const store = { kind: st.serviceKind, service: st.service, dbName, resourceName: st.resourceName };
+        Object.assign(env, sessionStoreEnvOverride(store));
+        planStores.push(store);
+      }
+    }
+    plans.set(session.id, { env, stores: planStores });
+  }
+  return { mode: 'isolated', plans };
+}
+
+/** `docker compose -p <project> -f <file> exec -T <service> <clientArgs…>`. */
+function composeExec(store, clientArgs, deps) {
+  const exec = deps.exec ?? runProcess;
+  const repoRoot = deps.repoRoot ?? REPO_ROOT;
+  return exec('docker',
+    ['compose', '-p', deps.project, '-f', deps.composeFile, 'exec', '-T', store.service.name, ...clientArgs],
+    { cwd: repoRoot });
+}
+
+/**
+ * Provision a session-scoped store instance inside the running fixture container
+ * via `docker compose exec` (zero host toolchain). Idempotent (`DROP IF EXISTS`
+ * → `CREATE`) so a same-run retry starts clean. Mongo creates-on-first-write and
+ * Redis uses a numbered logical DB — neither needs DDL, so both are no-ops here
+ * (the env override alone isolates them). Returns { ok, error? }.
+ */
+export async function provisionSessionStore(store, deps = {}) {
+  const e = store.service?.env ?? {};
+  if (store.kind === 'postgres') {
+    const user = e.POSTGRES_USER ?? 'postgres';
+    const res = await composeExec(store, ['psql', '-U', user, '-v', 'ON_ERROR_STOP=1',
+      '-c', `DROP DATABASE IF EXISTS "${store.dbName}"`,
+      '-c', `CREATE DATABASE "${store.dbName}"`], deps);
+    if (res.exitCode !== 0) return { ok: false, error: tailLines(res.stderr || res.stdout, 4) };
+  } else if (store.kind === 'mysql') {
+    const pass = e.MYSQL_ROOT_PASSWORD ?? e.MYSQL_PASSWORD ?? '';
+    const args = ['mysql', '-uroot'];
+    if (pass) args.push(`-p${pass}`);
+    args.push('-e', `DROP DATABASE IF EXISTS \`${store.dbName}\`; CREATE DATABASE \`${store.dbName}\`;`);
+    const res = await composeExec(store, args, deps);
+    if (res.exitCode !== 0) return { ok: false, error: tailLines(res.stderr || res.stdout, 4) };
+  }
+  return { ok: true };
+}
+
+/** Tear down a session-scoped store (best-effort; #137's per-run `down -v` is the
+ *  backstop for any store retained after a failure). Never throws. */
+export async function dropSessionStore(store, deps = {}) {
+  const e = store.service?.env ?? {};
+  try {
+    if (store.kind === 'postgres') {
+      const user = e.POSTGRES_USER ?? 'postgres';
+      await composeExec(store, ['psql', '-U', user, '-c', `DROP DATABASE IF EXISTS "${store.dbName}"`], deps);
+    } else if (store.kind === 'mysql') {
+      const pass = e.MYSQL_ROOT_PASSWORD ?? e.MYSQL_PASSWORD ?? '';
+      const args = ['mysql', '-uroot'];
+      if (pass) args.push(`-p${pass}`);
+      args.push('-e', `DROP DATABASE IF EXISTS \`${store.dbName}\`;`);
+      await composeExec(store, args, deps);
+    } else if (store.kind === 'mongo') {
+      await composeExec(store, ['mongosh', '--quiet', store.dbName, '--eval', 'db.dropDatabase()'], deps);
+    } else if (store.kind === 'redis') {
+      await composeExec(store, ['redis-cli', '-n', String(store.redisDb), 'flushdb'], deps);
+    }
+  } catch { /* best-effort */ }
+  return { ok: true };
 }
 
 // ─── #137 Phase 1: fixture port / leftover-container preflight ────────────────
@@ -1954,6 +2217,52 @@ export async function runPreflight(manifest, deps = {}) {
     const leftovers = await detectLeftoverFixtureContainers({ exec });
     if (leftovers.length > 0) {
       warn(`Leftover fixture container(s) from a prior run: ${leftovers.join(', ')} — auto-reconciled at bring-up (\`docker compose -p bp-fixtures down -v\`). Remove manually if you prefer: \`docker rm -f ${leftovers.join(' ')}\`.`);
+    }
+  }
+
+  // ── #116: per-session store-isolation plan ───────────────────────────────
+  // Report, per feature wave, whether the runner will ISOLATE concurrent
+  // integration sessions (private store + connection env) or SERIALIZE them
+  // (concurrency 1) — diagnosed at second 0, before any worktree is created.
+  // Also heuristically flag the CREATEDB capability the SQL path needs: the
+  // fixture images default to a superuser, so a non-default declared user is the
+  // one case worth a warning (the live failure otherwise surfaces as a clear
+  // `store provisioning failed` session error).
+  {
+    const isoConcurrency = deps.concurrency ?? resolveConcurrency(null, env);
+    // Mirror runFeatureWave's canProvision: the runner reaches the stack unless
+    // the operator runs their own (HS_SKIP_FIXTURE_SERVICES) or docker is absent.
+    const canProvision = declaredServices.length > 0
+      && !env.HS_SKIP_FIXTURE_SERVICES
+      && await dockerDaemonReachable({ exec });
+    const isoByKind = servicesByKind(declaredServices);
+    let anyIso = false;
+    for (const wave of manifest.waves) {
+      if (wave.kind !== 'feature') continue;
+      const plan = planStoreIsolation(wave, declaredServices, {
+        concurrencyLimit: isoConcurrency.value, runId: 'preflight', canProvision,
+      });
+      if (plan.mode === 'isolated') {
+        anyIso = true;
+        info(`#116: feature wave (phase ${wave.phase}) will isolate ${plan.plans.size} concurrent session(s) into private store(s)`);
+      } else if (plan.mode === 'serialized') {
+        anyIso = true;
+        warn(`#116: feature wave (phase ${wave.phase}) will run serially (concurrency 1) — ${plan.reason}`);
+      }
+    }
+    if (anyIso) {
+      // CREATEDB heuristic for the SQL engines (postgres/mysql). Mongo/Redis
+      // need no DDL, so no privilege is required there.
+      const pg = isoByKind.get('postgres');
+      const pgUser = pg?.env?.POSTGRES_USER;
+      if (pg && pgUser && pgUser !== 'postgres') {
+        warn(`#116: Postgres user "${pgUser}" is non-default — per-session isolation runs \`CREATE DATABASE\`, which needs the CREATEDB privilege. Grant it (\`ALTER ROLE ${pgUser} CREATEDB\`) if provisioning fails.`);
+      }
+      const my = isoByKind.get('mysql');
+      const myUser = my?.env?.MYSQL_USER;
+      if (my && myUser && myUser !== 'root' && !my?.env?.MYSQL_ROOT_PASSWORD) {
+        warn(`#116: MySQL isolates via root \`CREATE DATABASE\` but no MYSQL_ROOT_PASSWORD is declared — set it on the service, or per-session isolation will fail (the wave then needs serializing).`);
+      }
     }
   }
 
@@ -3212,7 +3521,28 @@ export async function runFeatureWave(wave, manifest, state, deps = {}) {
   // 0/Infinity short-circuits to plain Promise.all (current behavior). Failure
   // containment is still per-session — runSession returns { ok, ... } and never
   // throws — so a bad session can't poison the rest of the wave.
-  const limit = deps.concurrency?.value ?? 0;
+  let limit = deps.concurrency?.value ?? 0;
+
+  // #116: isolate-or-serialize. When ≥2 sessions in this wave declare an
+  // isolated-per-worker DB/cache resource that could run concurrently, either
+  // give each its own session-scoped store (mode 'isolated' → per-session env in
+  // `storePlans`) or, when that's impossible, force concurrency 1 so the shared
+  // env is safe (mode 'serialized'). 'shared' = current behavior unchanged.
+  // `canProvision` is false when the runner can't reach the fixture stack (an
+  // operator stack via HS_SKIP_FIXTURE_SERVICES, or the stack never came up).
+  const isolation = planStoreIsolation(wave, servicesFromManifest(manifest), {
+    concurrencyLimit: limit,
+    runId: state.runId,
+    canProvision: !!deps.fixtureStack,
+  });
+  /** @type {Map<string, { env: Record<string,string>, stores: object[] }>} */
+  const storePlans = isolation.plans;
+  if (isolation.mode === 'serialized') {
+    log(`  · #116: serializing this wave (concurrency 1) — ${isolation.reason}`);
+    limit = 1;
+  } else if (isolation.mode === 'isolated') {
+    log(`  · #116: isolating ${storePlans.size} session(s) — each gets a private store + connection env`);
+  }
   // C1-6 (#99): start the per-session heartbeat for the duration of the wave.
   // unref'd + stopped in finally so it never leaks past the wave (or a throw).
   const heartbeat = startHeartbeat(() => state, {
@@ -3225,7 +3555,14 @@ export async function runFeatureWave(wave, manifest, state, deps = {}) {
   try {
     results = await runWithConcurrency(
       wave.sessions,
-      s => runSession(s, state, sessionDeps),
+      s => runSession(s, state, {
+        ...sessionDeps,
+        // #116: a session's private store plan + the fixture stack handle to
+        // provision it. Absent for 'shared'/'serialized' waves → runSession runs
+        // against the global shared env exactly as before.
+        storePlan: storePlans.get(s.id),
+        fixtureStack: deps.fixtureStack,
+      }),
       limit,
     );
   } finally {
@@ -3481,10 +3818,57 @@ export async function stopFixtureServices(file, repoRoot, deps = {}) {
  * Execute an integration wave: a single command run.
  * @returns {Promise<{ ok: boolean; exitCode: number; stdoutTail: string }>}
  */
+/**
+ * #150: ecosystems whose test runner refuses to run when the manifest lists a
+ * dependency that is locked-but-not-installed. Bundler is strict — `bundle exec`
+ * aborts with `Bundler::GemNotFound` if ANY Gemfile gem is missing from the
+ * install. node (`npm`/`vitest`) and python (`pytest`) tolerate a
+ * declared-but-uninstalled dependency at test time, so they need no pre-install.
+ */
+const STRICT_INSTALL_ECOSYSTEMS = new Set(['ruby']);
+
+/**
+ * #150: resolve the install command that MUST run before a strict-ecosystem
+ * `bundle exec`-style test, or null when the ecosystem tolerates uninstalled
+ * deps (node/python) or no install command is known. Tenet 2: the ecosystem and
+ * its install command are READ from the manifest (Decision A's baked
+ * `projectManifestStub.ecosystem` + `seedInstallCmd`), never re-derived in the
+ * runner.
+ *
+ * @param {{ projectManifestStub?: { ecosystem?: string; seedInstallCmd?: string } } | null | undefined} manifest
+ * @returns {string|null}
+ */
+export function strictEcosystemInstallCmd(manifest) {
+  const stub = manifest?.projectManifestStub;
+  const eco = stub?.ecosystem;
+  if (!eco || !STRICT_INSTALL_ECOSYSTEMS.has(eco)) return null;
+  const cmd = (stub.seedInstallCmd || '').trim();
+  return cmd || null;
+}
+
 export async function runIntegrationWave(wave, deps = {}) {
   const exec = deps.exec ?? runProcess;
   const log = deps.log ?? console.log;
   const repoRoot = deps.repoRoot ?? REPO_ROOT;
+  // #150: strict ecosystems (Bundler) abort `bundle exec` if the merged manifest
+  // lists a dep not yet installed in THIS gate environment. The feature wave that
+  // just landed added gems to the base Gemfile (unioned by mergeGemfile) but they
+  // were never installed in repoRoot, so install first. The command is threaded
+  // from the manifest (tenet 2); null/no-op for node/python. Idempotent, so it is
+  // safe to run even for the Phase-0 gate where nothing changed.
+  if (deps.installCmd) {
+    log(`  ↻ Integration gate (${wave.phase}): installing merged deps (\`${deps.installCmd}\`) before \`${wave.test.cmd}\`…`);
+    const [icmd, ...iargs] = parseShellCmd(deps.installCmd);
+    const inst = await exec(icmd, iargs, { cwd: repoRoot });
+    if (inst.exitCode !== 0) {
+      return {
+        ok: false,
+        exitCode: inst.exitCode,
+        stdoutTail: tailLines(`pre-gate install \`${deps.installCmd}\` failed (exit ${inst.exitCode}):\n`
+          + (inst.stdout || '') + '\n' + (inst.stderr || '')),
+      };
+    }
+  }
   log(`\n▶ Integration gate (${wave.phase}) — ${wave.test.cmd}`);
   // Execute via shell to honor compound commands in test.cmd (e.g. `npm run test:integration`).
   const [cmd, ...args] = parseShellCmd(wave.test.cmd);
@@ -4353,6 +4737,36 @@ export async function runSession(sessionEntry, state, deps = {}) {
     return failSession(`brief read failed: ${e.message}`, `brief read failed: ${e.message}`);
   }
 
+  // 2b) #116: provision this session's isolated store(s) BEFORE spawning claude
+  //     (the agent may run its test mid-work) and build the per-session env
+  //     OVERRIDE. Idempotent provisioning makes a same-run retry clean. The
+  //     override clobbers the globally-applied DATABASE_URL/REDIS_URL so the
+  //     session's claude + test + reconcile-retest all hit its private store.
+  //     Drop on success; RETAIN on failure (the name is in the failure report).
+  //     Absent storePlan/fixtureStack → sessionEnv stays the global env.
+  let sessionEnv = process.env;
+  const storePlan = deps.storePlan;
+  if (storePlan && deps.fixtureStack) {
+    const storeDeps = {
+      exec, repoRoot,
+      composeFile: deps.fixtureStack.file,
+      project: deps.fixtureStack.project,
+    };
+    for (const store of storePlan.stores) {
+      const prov = await provisionSessionStore(store, storeDeps);
+      if (!prov.ok) {
+        return failSession(
+          `store provisioning failed (${describeStore(store)}): ${prov.error}`,
+          `[runner]\nstore provisioning failed for ${describeStore(store)}: ${prov.error}`,
+        );
+      }
+    }
+    sessionEnv = { ...process.env, ...storePlan.env };
+    // Record the store identifiers so a failure (which retains them) is debuggable.
+    cur.isolatedStores = storePlan.stores.map(describeStore);
+    teeLog(`    · ${sessionEntry.id}: isolated store(s) ${cur.isolatedStores.join(', ')}`);
+  }
+
   // 3) Spawn claude CLI with the brief as the SOLE context (passed via stdin to
   //    avoid argv length limits). The worktree is the cwd — claude sees the
   //    session's repo only, not the specs.
@@ -4384,6 +4798,7 @@ export async function runSession(sessionEntry, state, deps = {}) {
     claudeRes = await teeExec(CLAUDE_CLI, claudeArgs, {
       cwd: worktreePath,
       input: briefContent,
+      env: sessionEnv, // #116: per-session store env (or the global env when unset)
       detached: process.platform !== 'win32', // posix: own process group for tree-kill
       onSpawn: (child) => { claudeChild = child; },
     });
@@ -4452,7 +4867,7 @@ export async function runSession(sessionEntry, state, deps = {}) {
   //    never embed a `cd …` prefix the shell:false spawn cannot honor.
   const [testCmd, ...testArgs] = parseShellCmd(sessionEntry.test.cmd);
   const testCwd = resolveTestCwd(worktreePath, sessionEntry);
-  const testRes = await teeExec(testCmd, testArgs, { cwd: testCwd });
+  const testRes = await teeExec(testCmd, testArgs, { cwd: testCwd, env: sessionEnv });
 
   // #126: ordering contract — bootstrap/install → independent test →
   //   reconcile-with-base → (re-test if changed) → push/PR.
@@ -4483,7 +4898,7 @@ export async function runSession(sessionEntry, state, deps = {}) {
     return failSession(reconcile.error, `[claude]\n${claudeStdoutTail}\n[reconcile]\n${reconcile.output ?? reconcile.error}`);
   }
   if (reconcile.merged) {
-    const reRes = await teeExec(testCmd, testArgs, { cwd: testCwd });
+    const reRes = await teeExec(testCmd, testArgs, { cwd: testCwd, env: sessionEnv });
     // #126: advisory lets a post-merge failure fall through to push (CI is the gate).
     if (testBlocks(reRes.exitCode, 'independent test failed after reconciling with the latest base — the merge likely changed shared deps')) {
       const err = `Independent test failed (exit ${reRes.exitCode}) after reconciling with the latest base — the merge likely changed shared deps`;
@@ -4564,6 +4979,15 @@ export async function runSession(sessionEntry, state, deps = {}) {
     for (const ac of sessionEntry.manualAcs ?? []) {
       teeLog(`        [ ] ${ac.id}: ${ac.text}`);
     }
+  }
+
+  // 5c) #116: drop the session's isolated store(s) now that it succeeded. On a
+  //     failure path failSession returns earlier and the store is RETAINED for
+  //     debugging (its name is in run-state + the failure report); #137's
+  //     per-run `down -v` reclaims it next run.
+  if (storePlan && deps.fixtureStack) {
+    const storeDeps = { exec, repoRoot, composeFile: deps.fixtureStack.file, project: deps.fixtureStack.project };
+    for (const store of storePlan.stores) await dropSessionStore(store, storeDeps);
   }
 
   // 6) Close the log stream, then remove the worktree (which deletes session.log
@@ -4849,6 +5273,11 @@ async function main() {
       const res = await runFeatureWave(w, manifest, state, {
         saveState, concurrency, claudeArgs: resolvedClaudeArgs, costCapActive: maxCost.value > 0,
         testPolicy: testPolicy.value, // #126: advisory local-test gating flows to runSession
+        // #116: hand the running fixture stack to the wave so it can provision
+        // per-session stores. Null when the runner did not start the stack (an
+        // operator stack via HS_SKIP_FIXTURE_SERVICES, or bring-up failed) →
+        // planStoreIsolation falls back to serializing instead of isolating.
+        fixtureStack: fixtureRes?.started ? { file: fixtureRes.file, project: fixtureRes.project } : null,
       });
       prevWaveHadFailures = !res.ok; // B4: track for on-green mode
       if (!res.ok) {
@@ -4908,7 +5337,9 @@ async function main() {
         await syncBaseBranch({});
       }
     } else {
-      const res = await runIntegrationWave(w);
+      // #150: thread the strict-ecosystem pre-gate install (e.g. `bundle install`)
+      // so a Bundler gate installs the just-merged gems before `bundle exec`.
+      const res = await runIntegrationWave(w, { installCmd: strictEcosystemInstallCmd(manifest) });
       prevWaveHadFailures = !res.ok; // B4: track for on-green mode
       if (!res.ok) {
         // #126: always write the failure report + log; the HALT decision is the

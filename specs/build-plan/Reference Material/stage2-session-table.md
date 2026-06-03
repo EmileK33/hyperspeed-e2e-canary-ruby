@@ -1,41 +1,41 @@
-## Session decomposition
+## Session Decomposition — Canary Bookmarks API
 
 | ID | Name | Category | Phase | Prerequisites | Owned files (exhaustive) | Complexity |
 | -- | ---- | -------- | ----- | ------------- | ------------------------ | ---------- |
-| S0-A | Phase 0 harness + Sinatra scaffold | Infrastructure | 0 | — | `Gemfile`, `spec/spec_helper.rb`, `tests/integration/harness_spec.rb`, `tests/integration/.keep`, `app/app.rb`, `config.ru`, `.rspec`, `Rakefile` | M |
-| S1-A | Store (Postgres CRUD) | Backend API | 1 | S0-A | `app/store.rb`, `tests/integration/store_spec.rb` | L |
-| S2-A | Bookmarks routes (POST/GET/DELETE) | Backend API | 2 | S1-A | `app/routes/bookmarks.rb`, `tests/integration/bookmarks_spec.rb` | M |
-| S2-B | Tags routes (POST tag, GET tags) | Backend API | 2 | S1-A | `app/routes/tags.rb`, `tests/integration/tags_spec.rb` | M |
-| S3-A | Health route | Backend API | 3 | S0-A | `app/routes/health.rb`, `tests/integration/health_spec.rb` | S |
-| S3-B | Status route (brand color) | Backend API | 3 | S0-A | `app/routes/status.rb`, `tests/integration/status_spec.rb` | S |
-
-### Notes on shared infrastructure
-- `app/app.rb` is owned solely by S0-A. It defines `Bookmarks::App < Sinatra::Base`, sets JSON content-type, configures the JSON 404 handler (US-002 AC), and `require`s all route files (`app/routes/bookmarks`, `tags`, `health`, `status`) and `app/store`. Route files reopen `Bookmarks::App` to register endpoints — they never modify `app/app.rb`.
-- `Gemfile` is exclusive to S0-A and enumerates **every** gem the project needs: runtime (`sinatra`, `puma`, `pg`, `json`, `rackup`), dev/test (`rspec`, `rack-test`).
-- `spec/spec_helper.rb` (S0-A) sets `ENV['DATABASE_URL'] ||= 'postgres://postgres:postgres@localhost:5432/canary_test'` BEFORE requiring `app/app.rb`, provisions schema once (`CREATE TABLE IF NOT EXISTS bookmarks ...; CREATE TABLE IF NOT EXISTS bookmark_tags ...`), and configures `Rack::Test` mixin. Per-spec isolation is row-level via `TRUNCATE` in `before(:each)`.
-- S0-A's `test.cmd` is `bundle exec rspec tests/integration` (project-level integration command) and ships a trivial harness spec that exits 0.
+| S0-A | Scaffold + Integration Harness | Infrastructure | 0 | — | `Gemfile`, `spec/spec_helper.rb`, `tests/integration/harness_spec.rb`, `app/app.rb`, `.rspec` | M |
+| S1-A | Bookmark Store (Postgres) | Backend API | 1 | S0-A | `app/store.rb`, `tests/integration/store_spec.rb` | M |
+| S2-A | Bookmarks CRUD Routes | Backend API | 2 | S1-A | `app/routes/bookmarks.rb`, `tests/integration/bookmarks_spec.rb` | M |
+| S2-B | Tag Routes | Backend API | 2 | S1-A | `app/routes/tags.rb`, `tests/integration/tags_spec.rb` | M |
+| S2-C | Health Route | Backend API | 2 | S1-A | `app/routes/health.rb`, `tests/integration/health_spec.rb` | S |
+| S2-D | Status Route (brand_color) | Backend API | 2 | S1-A | `app/routes/status.rb`, `tests/integration/status_spec.rb` | S |
 
 ### Gate definitions
-- **Phase 0 → Phase 1 gate:** S0-A merged. `bundle exec rspec tests/integration` exits 0 on harness spec.
-- **Phase 1 → Phase 2 gate:** S1-A merged. Store CRUD specs green.
-- **Phase 2 → Phase 3 gate:** S2-A + S2-B merged. Phase 3 sessions (S3-A, S3-B) have no semantic dependency on Phase 2 routes and could start as soon as S0-A clears — see early-start.
+
+- **Phase 0 → Phase 1 gate**: S0-A must complete. `bundle exec rspec tests/integration` must exit 0 on the trivial smoke spec. `Gemfile` must enumerate all four gems (`sinatra`, `pg`, `rspec`, `rack-test`). `app/app.rb` must safely load any present route files (glob-based require) so it doesn't break before Phase 2.
+- **Phase 1 → Phase 2 gate**: S1-A must complete. `Store#create/#all/#find/#delete` must be defined and exercised by `store_spec.rb`. No non-blocking sessions in Phase 1.
+- **Phase 2 final gate**: S2-A, S2-B, S2-C, S2-D all merged; full `bundle exec rspec tests/integration` green; manual sign-off on `brand_color: "#ff5d8f"` rendering in `GET /status` (US-006 AC-2).
 
 ### Intra-phase dependencies
-- None. Within each phase all sessions touch disjoint files and can run in parallel.
+
+None within any phase — all Phase 2 sessions are mutually independent (different route files, different spec files, both only import `Store` from Phase 1).
 
 ### Early-start optimizations
-- **S3-A, S3-B** depend only on S0-A (Sinatra base + harness). They can begin as soon as the Phase 0 gate clears, in parallel with S1-A. Listed as Phase 3 only because the spec assigns them to US-005/006; runtime ordering permits Phase 1 launch.
+
+- S2-C (Health) and S2-D (Status) technically do not need `Store` (they read version/uptime/brand). If S1-A defines `Store` early but DB wiring lingers, S2-C/D can begin against the already-stable `app/app.rb` scaffold. In practice the Phase 1 gate is fast (single file) so early-start is marginal.
 
 ### Critical path
-S0-A → S1-A → S2-A (or S2-B) → (Phase 3) = M + L + M + S ≈ 7 hrs
+
+S0-A → S1-A → S2-A (Bookmarks CRUD — largest Phase 2 surface). Length: 3 phases, ~7 hrs.
 
 ### Phase-ordering self-check
-- S1-A imports from S0-A (`app/app.rb`, harness) → 0 < 1 ✓
-- S2-A imports Store from S1-A → 1 < 2 ✓
-- S2-B imports Store from S1-A → 1 < 2 ✓
-- S2-A, S2-B, S3-A, S3-B reopen `Bookmarks::App` from S0-A → 0 < 2/3 ✓
-- S3-A, S3-B import from S0-A only → 0 < 3 ✓
-- No same-phase or backwards edges.
+
+- `app/store.rb` (S1-A) imports nothing session-produced → N/A
+- `tests/integration/store_spec.rb` (S1-A) imports `spec_helper` (S0-A) → S0-A phase 0, S1-A phase 1 ✓
+- `app/routes/bookmarks.rb` (S2-A) imports `Store` from S1-A → S1-A phase 1, S2-A phase 2 ✓
+- `app/routes/tags.rb` (S2-B) imports `Store` from S1-A → phase 1 < phase 2 ✓
+- `app/routes/health.rb` (S2-C) loaded by `app/app.rb` (S0-A) via glob require → S0-A phase 0, S2-C phase 2 ✓ (S0-A does not import from S2-C; lazy glob require ≠ symbol import)
+- `app/routes/status.rb` (S2-D) — same as S2-C ✓
+- All Phase 2 spec files import `spec_helper` (S0-A) → phase 0 < phase 2 ✓
 
 Phase-ordering self-check: PASS
 
@@ -44,64 +44,64 @@ Phase-ordering self-check: PASS
   {
     "id": "S0-A",
     "phase": 0,
-    "name": "Phase 0 harness + Sinatra scaffold",
+    "name": "Scaffold + Integration Harness",
     "category": "Infrastructure",
     "prerequisites": [],
-    "ownedFiles": ["Gemfile", "spec/spec_helper.rb", "tests/integration/harness_spec.rb", "tests/integration/.keep", "app/app.rb", "config.ru", ".rspec", "Rakefile"],
+    "ownedFiles": ["Gemfile", "spec/spec_helper.rb", "tests/integration/harness_spec.rb", "app/app.rb", ".rspec"],
     "complexity": "M",
-    "specSections": ["1.1 Shared contracts", "1.2 Database schema", "1.5 HTTP status code contracts", "1.6 Route manifest", "1.8 Technology stack — selected choices only", "1.11 Cross-session runtime patterns", "1.12 Environment variable schema", "1.7 Third-party dependencies"]
+    "specSections": ["1.4 Critical ordering rules", "1.7 Third-party dependencies", "1.8 Technology stack — selected choices only", "1.11 Cross-session runtime patterns", "1.12 Environment variable schema", "1.5 HTTP status code contracts"]
   },
   {
     "id": "S1-A",
     "phase": 1,
-    "name": "Store (Postgres CRUD)",
+    "name": "Bookmark Store (Postgres)",
     "category": "Backend API",
     "prerequisites": ["S0-A"],
     "ownedFiles": ["app/store.rb", "tests/integration/store_spec.rb"],
-    "complexity": "L",
-    "specSections": ["1.1 Shared contracts", "1.2 Database schema", "1.11 Cross-session runtime patterns", "1.12 Environment variable schema", "1.4 Critical ordering rules"]
+    "complexity": "M",
+    "specSections": ["1.1 Shared contracts", "1.2 Database schema", "1.12 Environment variable schema", "1.13 Feature scope — P0 vs P1"]
   },
   {
     "id": "S2-A",
     "phase": 2,
-    "name": "Bookmarks routes (POST/GET/DELETE)",
+    "name": "Bookmarks CRUD Routes",
     "category": "Backend API",
     "prerequisites": ["S1-A"],
     "ownedFiles": ["app/routes/bookmarks.rb", "tests/integration/bookmarks_spec.rb"],
     "complexity": "M",
-    "specSections": ["1.1 Shared contracts", "1.5 HTTP status code contracts", "1.6 Route manifest"]
+    "specSections": ["1.5 HTTP status code contracts", "1.6 Route manifest", "1.1 Shared contracts", "1.13 Feature scope — P0 vs P1"]
   },
   {
     "id": "S2-B",
     "phase": 2,
-    "name": "Tags routes (POST tag, GET tags)",
+    "name": "Tag Routes",
     "category": "Backend API",
     "prerequisites": ["S1-A"],
     "ownedFiles": ["app/routes/tags.rb", "tests/integration/tags_spec.rb"],
     "complexity": "M",
-    "specSections": ["1.1 Shared contracts", "1.5 HTTP status code contracts", "1.6 Route manifest"]
+    "specSections": ["1.5 HTTP status code contracts", "1.6 Route manifest", "1.1 Shared contracts", "1.13 Feature scope — P0 vs P1"]
   },
   {
-    "id": "S3-A",
-    "phase": 3,
-    "name": "Health route",
+    "id": "S2-C",
+    "phase": 2,
+    "name": "Health Route",
     "category": "Backend API",
-    "prerequisites": ["S0-A"],
+    "prerequisites": ["S1-A"],
     "ownedFiles": ["app/routes/health.rb", "tests/integration/health_spec.rb"],
     "complexity": "S",
-    "specSections": ["1.1 Shared contracts", "1.5 HTTP status code contracts", "1.6 Route manifest"]
+    "specSections": ["1.5 HTTP status code contracts", "1.6 Route manifest", "1.13 Feature scope — P0 vs P1"]
   },
   {
-    "id": "S3-B",
-    "phase": 3,
-    "name": "Status route (brand color)",
+    "id": "S2-D",
+    "phase": 2,
+    "name": "Status Route (brand_color)",
     "category": "Backend API",
-    "prerequisites": ["S0-A"],
+    "prerequisites": ["S1-A"],
     "ownedFiles": ["app/routes/status.rb", "tests/integration/status_spec.rb"],
     "complexity": "S",
-    "specSections": ["1.1 Shared contracts", "1.5 HTTP status code contracts", "1.6 Route manifest"]
+    "specSections": ["1.1 Shared contracts", "1.5 HTTP status code contracts", "1.6 Route manifest", "1.13 Feature scope — P0 vs P1"]
   }
 ]
 ```
 
-Total: 6 sessions across 4 phases
+Total: 6 sessions across 3 phases

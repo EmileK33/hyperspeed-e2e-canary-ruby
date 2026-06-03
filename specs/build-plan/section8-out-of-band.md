@@ -2,123 +2,124 @@
 
 ---
 
-## OOB-1: PostgreSQL CI Service Provisioning
+## Task 1: Postgres Fixture Instance Provisioned and Reachable
 
-**Name:** PostgreSQL service container available in CI with `DATABASE_URL` injected
+**Name:** Live Postgres server available at a valid `DATABASE_URL`
 
-**Gates:** Phase 0 (harness session) — and transitively every downstream session, since Phase 0 must flip NOT-READY → READY before the manifest build proceeds
+**Gates:** Phase 0 session (harness), and transitively every Phase 1/2/3 session
 
 **Pass condition:**
-- A Postgres instance (any 14+ version) is reachable inside the CI runner
-- `DATABASE_URL` environment variable is set to a valid connection URI pointing at that instance
-- A `psql $DATABASE_URL -c '\l'` (or equivalent smoke command) exits 0
-- The CI service config (e.g., `services: postgres:` in GitHub Actions YAML, or equivalent) is committed and visible in the repo before Phase 0 session starts
+- A Postgres instance (≥ 12 acceptable; must support `SERIAL`, `ON DELETE CASCADE`, partial indexes) is running and network-reachable from the build worker
+- `DATABASE_URL` is set in the CI/build environment to a valid connection URI
+- `psql $DATABASE_URL -c "SELECT 1;"` returns `1` with exit code `0`
+- The connecting role has `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `DROP TABLE` privileges on at least one writable schema
 
 **Fail condition:**
-- `psql $DATABASE_URL` returns a connection-refused or authentication error
-- `DATABASE_URL` is unset or empty in the CI job environment
-- The CI YAML does not declare a Postgres service block
+- `psql` connection refused, authentication error, or role lacks DDL privileges
+- `DATABASE_URL` is absent or malformed (pg gem raises `PG::ConnectionBad` on first connect attempt)
+- Postgres version < 10 (risks `ON DELETE CASCADE` or index syntax edge cases)
 
 **Fallback architecture:**
-- Swap the fixture Postgres for SQLite in-process using the `sequel` + `sqlite3` gems, removing the `pg` gem dependency
-- Store layer uses `Sequel.sqlite` with an in-memory or temp-file URI instead of `DATABASE_URL`
-- **Sessions that need brief changes:** Phase 0 harness (remove DB service wait step, change `DATABASE_URL` setup), Phase 1 `app/store.rb` (replace `PG::Connection` with `Sequel` DSL), all integration specs (adjust connection setup in `spec/spec_helper.rb`)
-- *Note: this is an architecturally significant change — `pg` is listed as irreversible in the stack table; this fallback should only be taken if CI Postgres provisioning is structurally blocked, not merely misconfigured*
+- Replace Postgres with SQLite via the `sequel` gem + `sqlite3` gem; rewrite `app/store.rb` to use Sequel DSL instead of raw `pg` calls
+- Schema changes: drop `SERIAL` → use `INTEGER PRIMARY KEY AUTOINCREMENT`; cascade deletes expressed via Sequel migrations
+- **Session briefs that must change:** Phase 0 (`Gemfile` adds `sequel`, `sqlite3`, removes `pg`), Phase 1 (`app/store.rb` rewrites connection and query layer), all Phase 2/3 sessions if connection bootstrapping moves
 
 ---
 
-## OOB-2: Ruby 3.3 Runtime Available on CI Runner
+## Task 2: Ruby 3.3 Runtime Available on Build Worker
 
-**Name:** CI runner provides Ruby 3.3.x as the active runtime
+**Name:** Ruby 3.3.x interpreter installed and default on the build worker PATH
 
-**Gates:** Phase 0 — if `ruby --version` does not satisfy `~> 3.3`, `bundle install` may silently use a wrong runtime, causing spec failures that are misattributed to application code
+**Gates:** Phase 0 session (owns `Gemfile`; `bundle install` must resolve against the declared platform)
 
 **Pass condition:**
-- `ruby --version` in the CI job outputs `ruby 3.3.x (...)` (any patch release of 3.3)
-- CI YAML explicitly pins the Ruby version (e.g., `ruby-version: '3.3'` in a `setup-ruby` step or `.ruby-version` file present in repo root)
+- `ruby --version` returns `ruby 3.3.x` (any patch level)
+- `gem --version` returns a Bundler-compatible RubyGems version
+- `bundle --version` returns Bundler ≥ 2.4
 
 **Fail condition:**
-- `ruby --version` returns 3.0, 3.1, 3.2, or any 2.x
-- No `.ruby-version` file and no CI pin; runtime is whatever happens to be on the image
-- `bundle install` emits a platform mismatch or `required_ruby_version` constraint error
+- `ruby --version` returns 3.1, 3.2, or any version < 3.3
+- `ruby` not on PATH at all
+- Bundler not installed or version < 2.0
 
 **Fallback architecture:**
-- Downgrade declared runtime floor to Ruby 3.1 (the oldest non-EOL minor at time of writing)
-- Audit `Gemfile` and `app/` code for any 3.3-only syntax (e.g., it-block numbered parameters used as primary style); replace with compatible equivalents
-- **Sessions that need brief changes:** Phase 0 (update `.ruby-version` and `Gemfile` `ruby` directive), no application logic changes anticipated unless 3.3-specific syntax was used
+- If only Ruby 3.2 is available: audit gem lockfile for any 3.3-only syntax (pattern-matching refinements, etc.); if none used, lower the `.ruby-version` pin to `3.2` and update `Gemfile` `ruby` directive — no session logic changes required
+- If Ruby < 3.2 only: full re-evaluation of gem compatibility required; this is a project-blocking escalation, not a self-contained fallback
 
 ---
 
-## OOB-3: Native Extension Build for `pg` Gem
+## Task 3: RubyGems Network Access Confirmed (Gem Installability)
 
-**Name:** `libpq` client library available on CI runner so `gem install pg` compiles successfully
+**Name:** `sinatra`, `pg`, `rspec`, `rack-test` resolvable and installable from the build environment
 
-**Gates:** Phase 0 (`bundle install` must succeed before harness spec can run)
+**Gates:** Phase 0 session (`bundle install` must succeed before any subsequent session can load the app)
 
 **Pass condition:**
-- `bundle install` completes without error in the CI environment
-- `bundle exec ruby -e "require 'pg'; puts PG::VERSION"` exits 0 and prints a version string
-- CI YAML includes the necessary system dependency step (e.g., `sudo apt-get install -y libpq-dev` on Ubuntu runners, or use of a pre-baked image that includes it)
+- A scratch `Gemfile` containing exactly `gem "sinatra"`, `gem "pg"`, `gem "rspec"`, `gem "rack-test"` resolves and installs cleanly via `bundle install` on the build worker
+- No native extension build failures (notably `pg` requires `libpq-dev` / `postgresql-client` headers)
 
 **Fail condition:**
-- `bundle install` fails with `pg` native extension build error: `Can't find the 'libpq-fe.h' header`
-- CI log shows `mkmf` or `extconf.rb` error for the `pg` gem
+- `bundle install` exits non-zero for any of the four gems
+- `pg` native extension fails to compile (missing `libpq-dev` or `pg_config` not on PATH)
+- Air-gapped environment with no gem mirror configured
 
 **Fallback architecture:**
-- Same as OOB-1 fallback (SQLite + Sequel), since the `pg` build failure and Postgres unavailability have the same root cause and the same remedy
-- Alternatively, use `pg` gem pre-compiled binary variants (`gem 'pg', platform: :x86_64-linux`) if the CI runner architecture supports it — add explicit platform lock to `Gemfile.lock`
-- **Sessions that need brief changes:** Phase 0 only (Gemfile platform directive); no application logic changes
+- If `pg` native extension is unbuildable: same SQLite fallback as Task 1 (they are coupled — both tasks failing triggers the same fallback path)
+- If only a private gem mirror is available: add `source "https://internal-mirror"` to `Gemfile` in Phase 0 brief; no logic changes required
+- **Session briefs that must change:** Phase 0 `Gemfile` source directive if mirror substitution is needed
 
 ---
 
-## OOB-4: RubyGems Registry Reachability
+## Task 4: `DATABASE_URL` Environment Variable Injected into CI Secrets Store
 
-**Name:** `rubygems.org` (and any configured mirror) is reachable from the CI runner for `bundle install`
+**Name:** `DATABASE_URL` secret configured in CI pipeline before any job runs
 
-**Gates:** Phase 0
+**Gates:** Phase 0 session (spec_helper connects on load; harness_spec.rb will fail if absent)
 
 **Pass condition:**
-- `bundle install` resolves and downloads all four declared gems (`sinatra`, `pg`, `rspec`, `rack-test`) plus their transitive dependencies without network error
-- Optionally: a `Gemfile.lock` is pre-committed to the repo, so CI only needs to verify the lock, not re-resolve — this is the recommended mitigation
+- `DATABASE_URL` is present as a CI secret/environment variable visible to all build job steps
+- Value is a syntactically valid PostgreSQL URI: `postgres://user:password@host:port/dbname`
+- The variable is injected before the first `bundle exec rspec` invocation
 
 **Fail condition:**
-- `bundle install` fails with a network timeout or SSL error against `rubygems.org`
-- A custom gem source is declared in `Gemfile` but the registry is not accessible from CI
+- Variable absent: app boots but all DB calls raise `PG::ConnectionBad`; every integration spec fails
+- Variable present but URI malformed: same failure mode
+- Variable scoped only to some pipeline stages and not the rspec job
 
 **Fallback architecture:**
-- Commit a complete `Gemfile.lock` (pre-generated locally) so CI runs `bundle install --frozen` against cached gems or a vendor bundle
-- Or add `bundle cache` / vendored gems (`vendor/bundle`) committed to the repo
-- **Sessions that need brief changes:** Phase 0 brief should specify that `Gemfile.lock` must be committed as part of the harness deliverable, not gitignored
+- If secrets management is unavailable: use a `.env` file loaded by a `dotenv` gem added to dev dependencies; add `require 'dotenv/load'` at top of `spec/spec_helper.rb`
+- **Session briefs that must change:** Phase 0 (`Gemfile` adds `gem "dotenv", group: :development`; `spec/spec_helper.rb` adds dotenv require)
 
 ---
 
-## OOB-5: [MANUAL] Brand Color Sign-Off for `GET /status`
+## Task 5: Manual Brand Color Sign-Off (AC-2 of US-006)
 
-**Name:** Human reviewer confirms `brand_color: "#ff5d8f"` in `GET /status` response matches brand guideline
+**Name:** Human verification that `GET /status` response contains `brand_color: "#ff5d8f"` and matches brand guidelines
 
-**Gates:** Phase 3 (US-006) **cannot be marked complete** — the session may write and pass automated tests, but AC-2 requires explicit human sign-off before the story is closed
+**Gates:** Final delivery / project sign-off (not a session gate — all build sessions can complete without this; this blocks acceptance)
 
 **Pass condition:**
-- A human reviewer calls `GET /status` against a running instance (local or CI-deployed) and visually/textually confirms the response body contains `"brand_color":"#ff5d8f"` with that exact six-character hex string (case-insensitive is acceptable only if the brand guideline document explicitly permits it; default assumption is lowercase as written)
-- Sign-off is recorded (PR comment, ticket acceptance, or equivalent)
+- A human reviewer issues `curl` or equivalent against the running service and confirms the JSON response contains exactly `"brand_color":"#ff5d8f"` (case-sensitive hex, lowercase)
+- Reviewer visually confirms the hex `#ff5d8f` renders as canary pink (not a near-miss like `#ff5d8e`)
+- WCAG AA pairing documented: `#ff5d8f` background / `#3a0a1c` text passes contrast check (reviewer confirms via a contrast tool, e.g., WebAIM)
 
 **Fail condition:**
-- Response contains a different hex value (e.g., `#FF5D8F` in uppercase if brand requires lowercase, or any digit transposition)
-- No human reviewer is available before the release gate; story remains open
+- Response contains a different hex value (wrong digit, uppercase, shorthand `#f58`)
+- `brand_color` key absent or misspelled
+- WCAG AA contrast ratio < 4.5:1 for the declared pairing
 
 **Fallback architecture:**
-- No code change is needed; this is a human-approval gate, not a technical blocker
-- If the brand guideline document specifies a *different* canonical hex, the constant in `app/routes/status.rb` must be updated and the RSpec literal matcher updated to match
-- **Sessions that need brief changes:** Phase 3 (US-006) brief should include an explicit "do not close until OOB-5 sign-off received" note
+- If `#ff5d8f` fails WCAG AA with `#3a0a1c`: substitute text color (not the brand color, which is spec-locked) — propose `#1a0008` or darker; re-run contrast check; update brand guidelines doc only, no code change required (the API field value is fixed by spec)
+- **Session briefs that must change:** Phase 3 (`app/routes/status.rb`) only if the hex value itself is determined to be a typo in the spec — requires explicit spec amendment before any code change
 
 ---
 
 ## Summary Table
 
-| ID | What | Gates | Automated? |
+| # | Task | Gates | Blocking risk |
 |---|---|---|---|
-| OOB-1 | Postgres CI service + `DATABASE_URL` | Phase 0 (all downstream) | Yes — CI YAML check + `psql` smoke |
-| OOB-2 | Ruby 3.3 on CI runner | Phase 0 (all downstream) | Yes — `ruby --version` + `.ruby-version` pin |
-| OOB-3 | `libpq` / `pg` native extension build | Phase 0 | Yes — `bundle install` exit code |
-| OOB-4 | RubyGems reachability / `Gemfile.lock` | Phase 0 | Yes — `bundle install` or `--frozen` |
-| OOB-5 | Brand color human sign-off | Phase 3 US-006 completion | **No — manual** |
+| 1 | Postgres instance live + reachable | Phase 0 → all phases | High — no DB, no integration tests pass |
+| 2 | Ruby 3.3 on build worker | Phase 0 → all phases | High — wrong runtime breaks gem resolution |
+| 3 | Gem installability (`pg` native ext) | Phase 0 → all phases | High — coupled to Task 1 via `pg` gem |
+| 4 | `DATABASE_URL` in CI secrets | Phase 0 → all phases | High — silent boot success, total test failure |
+| 5 | Manual brand color sign-off | Acceptance/delivery only | Low-risk to build; blocks final sign-off |

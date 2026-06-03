@@ -23,7 +23,7 @@
   "projectManifest": {
     "path": "Gemfile",
     "ecosystem": "ruby",
-    "content": "# frozen_string_literal: true\n\nsource \"https://rubygems.org\"\n\nruby \"3.3\"\n\ngem \"sinatra\"\ngem \"puma\"\ngem \"pg\"\ngem \"json\"\ngem \"rackup\"\n\ngroup :development, :test do\n  gem \"rspec\"\n  gem \"rack-test\"\nend\n"
+    "content": "source 'https://rubygems.org'\n\nruby '3.3'\n\ngem 'sinatra'\ngem 'pg'\n\ngroup :development, :test do\n  gem 'rspec'\n  gem 'rack-test'\nend\n"
   }
 }
 ```

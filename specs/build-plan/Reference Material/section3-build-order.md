@@ -1,107 +1,102 @@
-# Precise Build Order
+# Canary Bookmarks API — Precise Build Order
 
 ---
 
 ## Phase 0
 
 ### Sessions starting at gate open
-| Session | Parallel group |
-|---------|---------------|
-| **S0-A** — Phase 0 harness + Sinatra scaffold | Sole session; no parallelism available |
 
-**Intra-phase sequencing:** None. S0-A is the only session.
+| Session | Parallel group | Intra-phase sequencing |
+|---------|---------------|----------------------|
+| **S0-A** Scaffold + Integration Harness | Sole session — no parallelism available | None |
 
-### Gate 0 → 1 verification checklist
-A human must confirm **all** of the following before any Phase 1 (or early-start) session begins:
+S0-A runs alone. There are no other Phase 0 sessions.
 
-1. `bundle install` completes with exit code 0 and produces `Gemfile.lock` containing entries for `sinatra`, `puma`, `pg`, `json`, `rackup`, `rspec`, and `rack-test`.
-2. `bundle exec rspec tests/integration` exits 0 and the console output reports exactly the harness spec passing (e.g., `1 example, 0 failures`).
-3. `config.ru` is present and `rackup --help` parses it without error (`bundle exec rackup -p 9292 config.ru` starts the process and a `curl http://localhost:9292/` returns any HTTP response — even a 404 JSON body — within 3 seconds; then kill the process).
-4. `app/app.rb` defines the constant `Bookmarks::App` (verifiable by `bundle exec ruby -e "require_relative 'app/app'; puts Bookmarks::App.ancestors"` printing `Bookmarks::App` without error).
-5. `spec/spec_helper.rb` sets `DATABASE_URL` before requiring the app: running `bundle exec ruby -e "load 'spec/spec_helper.rb'"` against a live Postgres instance exits 0 and does not raise `PG::Error` or `NameError`.
-6. `tests/integration/.keep` is present on disk (`ls tests/integration/.keep` exits 0).
+### Phase 0 → Phase 1 Gate Verification Checklist
+
+A human must confirm **all four items** before any Phase 1 work begins:
+
+1. **`bundle exec rspec tests/integration/harness_spec.rb` exits 0** — the trivial smoke spec passes with zero failures, zero errors, zero pending-failures. Terminal output must show `0 failures`.
+2. **`Gemfile` enumerates exactly these four gems** — open `Gemfile` and confirm `gem 'sinatra'`, `gem 'pg'`, `gem 'rspec'`, and `gem 'rack-test'` are each present as explicit entries (not transitive-only). `bundle list` output must show all four resolved.
+3. **`app/app.rb` uses glob-based require for routes** — open `app/app.rb` and confirm the route-loading mechanism is a glob pattern (e.g., `Dir[File.join(__dir__, 'routes', '*.rb')].each { |f| require f }`) rather than explicit named requires. The file must parse without error when no files exist in `app/routes/`: `ruby -c app/app.rb` exits 0 and `bundle exec ruby -e "require_relative 'app/app'"` exits 0 against an empty `app/routes/` directory.
+4. **`.rspec` is present and sets default flags** — `cat .rspec` shows at minimum `--require spec_helper` and `--format documentation` (or project-agreed flags). `bundle exec rspec --version` exits 0.
 
 ---
 
 ## Phase 1
 
 ### Sessions starting at gate open
-| Session | Parallel group |
-|---------|---------------|
-| **S1-A** — Store (Postgres CRUD) | Sole session; no parallelism available |
 
-**Intra-phase sequencing:** None. S1-A is the only session.
+| Session | Parallel group | Intra-phase sequencing |
+|---------|---------------|----------------------|
+| **S1-A** Bookmark Store (Postgres) | Sole session — no parallelism available | None |
 
-### Gate 1 → 2 verification checklist
-A human must confirm **all** of the following before any Phase 2 session begins:
+S1-A runs alone. The session table explicitly states no non-blocking sessions exist in Phase 1.
 
-1. `bundle exec rspec tests/integration/store_spec.rb` exits 0 with 0 failures reported in the summary line.
-2. `bundle exec rspec tests/integration` exits 0 (harness spec + store spec together; no regressions).
-3. `app/store.rb` is present and `bundle exec ruby -e "require_relative 'app/store'; puts Bookmarks::Store"` exits 0 and prints `Bookmarks::Store` (or equivalent constant path).
-4. A manual smoke query: start `psql $DATABASE_URL -c "SELECT COUNT(*) FROM bookmarks;"` exits 0 (table exists and is reachable from the test database URL).
-5. A manual smoke query: `psql $DATABASE_URL -c "SELECT COUNT(*) FROM bookmark_tags;"` exits 0 (join table exists).
+### Phase 1 → Phase 2 Gate Verification Checklist
+
+A human must confirm **all five items** before any Phase 2 work begins:
+
+1. **`bundle exec rspec tests/integration/store_spec.rb` exits 0** — zero failures. Terminal output must show `0 failures`.
+2. **`Store#create` is defined and exercised** — `store_spec.rb` contains at least one example that calls `Store#create` and asserts a returned record with a non-nil `:id`.
+3. **`Store#all` is defined and exercised** — `store_spec.rb` contains at least one example that calls `Store#all` and asserts it returns an Array (including empty-array case).
+4. **`Store#find` is defined and exercised** — `store_spec.rb` contains at least one example that calls `Store#find` with a known id and asserts the correct record is returned; and at least one example for a missing id (returns nil or raises a defined exception, per spec contract).
+5. **`Store#delete` is defined and exercised** — `store_spec.rb` contains at least one example that calls `Store#delete` and confirms the record no longer appears in `Store#all` afterwards.
 
 ---
 
 ## Phase 2
 
 ### Sessions starting at gate open
-| Session | Parallel group |
-|---------|---------------|
-| **S2-A** — Bookmarks routes (POST/GET/DELETE) | **Parallel** with S2-B |
-| **S2-B** — Tags routes (POST tag, GET tags) | **Parallel** with S2-A |
 
-**Intra-phase sequencing:** S2-A and S2-B touch entirely disjoint files (`app/routes/bookmarks.rb` vs `app/routes/tags.rb`) and neither modifies `app/app.rb`. They may be assigned to separate agents/branches simultaneously with no coordination required until merge.
+All four sessions start simultaneously at Phase 2 gate open. They are **fully parallel** — no arrows between any of them.
 
-### Gate 2 → 3 verification checklist
-A human must confirm **all** of the following before any nominally-Phase-3 session that has **not** early-started begins (and before any early-started session is merged):
+| Session | Parallel group | Intra-phase sequencing |
+|---------|---------------|----------------------|
+| **S2-A** Bookmarks CRUD Routes | Group A (all four parallel) | None |
+| **S2-B** Tag Routes | Group A (all four parallel) | None |
+| **S2-C** Health Route | Group A (all four parallel) | None |
+| **S2-D** Status Route (brand_color) | Group A (all four parallel) | None |
 
-1. `bundle exec rspec tests/integration/bookmarks_spec.rb` exits 0 with 0 failures.
-2. `bundle exec rspec tests/integration/tags_spec.rb` exits 0 with 0 failures.
-3. `bundle exec rspec tests/integration` exits 0 — full suite including harness and store specs — with 0 failures (regression check).
-4. `POST /bookmarks` with body `{"url":"https://example.com","title":"T"}` returns HTTP 201 and a JSON body containing an integer `id` field (verifiable with `curl -s -o /dev/null -w "%{http_code}" -X POST ...` returning `201`).
-5. `GET /bookmarks` returns HTTP 200 and a JSON array (verifiable with `curl -s ... | ruby -e "require 'json'; a=JSON.parse(STDIN.read); raise unless a.is_a?(Array)"`  exits 0).
-6. `DELETE /bookmarks/:id` for an existing id returns HTTP 200 or 204 (per spec contract); for a nonexistent id returns HTTP 404 with a JSON body (not HTML).
-7. `POST /bookmarks/:id/tags` returns HTTP 201; `GET /bookmarks/:id/tags` returns HTTP 200 with a JSON array.
+Each session owns disjoint files (`app/routes/<name>.rb` and `tests/integration/<name>_spec.rb`). No session reads another's output file. Merge conflicts are structurally impossible given the file ownership table.
 
----
+### Phase 2 Final Gate Verification Checklist
 
-## Phase 3
+A human must confirm **all six items** before the build is considered complete:
 
-### Sessions starting at gate open
-| Session | Parallel group |
-|---------|---------------|
-| **S3-A** — Health route | **Parallel** with S3-B |
-| **S3-B** — Status route (brand color) | **Parallel** with S3-A |
-
-**Intra-phase sequencing:** S3-A and S3-B touch disjoint files (`app/routes/health.rb` vs `app/routes/status.rb`). Full parallel execution; no coordination required.
-
-### Gate 3 → done verification checklist
-1. `bundle exec rspec tests/integration/health_spec.rb` exits 0 with 0 failures.
-2. `bundle exec rspec tests/integration/status_spec.rb` exits 0 with 0 failures.
-3. `bundle exec rspec tests/integration` exits 0 — complete suite — with 0 failures.
-4. `GET /health` returns HTTP 200 and a JSON body containing keys `db` with value `"ok"` (verifiable: `curl -s http://localhost:9292/health | ruby -e "require 'json'; h=JSON.parse(STDIN.read); raise unless h['db']=='ok'"` exits 0).
-5. `GET /status` returns HTTP 200 and a JSON body containing the brand color field with its specified value (verifiable: `curl -s http://localhost:9292/status | ruby -e "require 'json'; h=JSON.parse(STDIN.read); raise unless h['color']=='<expected_value>'"` exits 0).
-6. Any route not defined in the manifest (e.g., `GET /nonexistent`) returns HTTP 404 with a JSON body — not an HTML Sinatra error page (verifiable: `curl -s http://localhost:9292/nonexistent | ruby -e "require 'json'; JSON.parse(STDIN.read)"` exits 0).
+1. **`bundle exec rspec tests/integration` exits 0** — the full integration suite (all spec files, including harness, store, bookmarks, tags, health, status) completes with zero failures, zero errors. Terminal output must show `0 failures`.
+2. **`GET /bookmarks` returns HTTP 200 with `Content-Type: application/json`** — `curl -i http://localhost:4567/bookmarks` shows `HTTP/1.1 200` and `Content-Type: application/json` header present.
+3. **`GET /tags` returns HTTP 200 with `Content-Type: application/json`** — `curl -i http://localhost:4567/tags` shows `HTTP/1.1 200` and `Content-Type: application/json` header present.
+4. **`GET /healthz` returns HTTP 200 with both `db:ok` and `redis:ok` fields** — `curl -s http://localhost:4567/healthz` produces a JSON body where both `"db":"ok"` and the uptime field are present (exact field names per spec section 1.6); response code is 200.
+5. **`GET /status` returns HTTP 200 with `brand_color` field present** — `curl -s http://localhost:4567/status` produces a JSON body containing a `brand_color` key.
+6. **Manual sign-off: `brand_color` value is exactly `"#ff5d8f"`** — a human reads the raw response body of `GET /status` and confirms `"brand_color":"#ff5d8f"` (US-006 AC-2). This item requires human eyes and cannot be delegated to the automated suite alone.
 
 ---
 
 ## Early-Start Optimizations
 
-### S3-A and S3-B — early start into Phase 1 window
+### Optimization 1 — S2-C (Health Route) early start
 
 | Attribute | Detail |
 |-----------|--------|
-| **Sessions** | S3-A (Health route), S3-B (Status route) |
-| **Subset of prerequisites that enables early start** | S0-A merged and Gate 0 → 1 checklist fully verified. No dependency on S1-A, S2-A, or S2-B. `Bookmarks::App` is defined in `app/app.rb`; route files reopen it without touching `app/app.rb`. |
-| **How to execute** | After Gate 0 clears, launch S3-A and S3-B in parallel alongside S1-A. Their specs live in `tests/integration/health_spec.rb` and `tests/integration/status_spec.rb` and can run independently via `bundle exec rspec tests/integration/health_spec.rb`. |
-| **Risk** | **Low but real:** if S0-A's scaffold is revised during the Phase 1 window (e.g., a bug fix to `app/app.rb`, `spec/spec_helper.rb`, or `Gemfile`), S3-A/S3-B branches must rebase. Since `app/app.rb` is frozen after S0-A merges (no other session modifies it), the practical rebase risk is confined to `Gemfile` or `spec_helper` hotfixes only. Mitigation: declare S0-A fully merged and locked before launching early-start sessions. |
-| **Integration note** | S3-A and S3-B must still pass the full `bundle exec rspec tests/integration` suite (including store and bookmark specs) before final merge, to satisfy the Gate 2 regression requirement in checklist item 3. They may be code-complete and branch-ready before Gate 2 clears, but the merge commit is held until Gate 2 verification passes. |
+| **Session** | S2-C |
+| **Subset of prerequisites that enables early start** | S0-A complete (glob-require in `app/app.rb` stable; `spec_helper` available). S1-A need not be complete because `app/routes/health.rb` does not call `Store` — it reads only uptime/version data. |
+| **What "early start" means** | S2-C begins immediately after Phase 0 gate passes, running concurrently with S1-A rather than waiting for Phase 1 gate. |
+| **Risk** | (1) If S1-A changes the `Store` interface in a way that forces a structural change to `app/app.rb` or `spec/spec_helper.rb`, S2-C's spec setup may need re-work. (2) If S1-A introduces a gem or Bundler change, S2-C's test run mid-session may fail mid-flight. (3) Phase 1 gate is expected to be fast (single-file session); the time saving is marginal and the coordination overhead may exceed the gain. **Recommended only if S1-A is unexpectedly delayed.** |
+
+### Optimization 2 — S2-D (Status Route) early start
+
+| Attribute | Detail |
+|-----------|--------|
+| **Session** | S2-D |
+| **Subset of prerequisites that enables early start** | S0-A complete only. `app/routes/status.rb` reads `brand_color` from config/env — no `Store` dependency. |
+| **What "early start" means** | S2-D begins immediately after Phase 0 gate, concurrently with S1-A. |
+| **Risk** | Same risks as S2-C above. Additionally: if the environment variable schema (spec section 1.12) is still being settled during S1-A work, S2-D's `brand_color` env-var wiring may require a fixup pass. **Same recommendation: defer unless S1-A is delayed.** |
 
 ---
 
 ## Critical Path
 
-**S0-A (M) → S1-A (L) → S2-A or S2-B (M, whichever is the last to merge) → Gate 2 verification → S3-A / S3-B merge (S)**
+**S0-A → S1-A → S2-A**
 
-Approximate wall-clock: **M + L + M + S ≈ 7 hours** (assuming S3-A/S3-B are code-complete via early-start and cost only merge overhead on the critical path, not full implementation time).
+Three phases in sequence. S2-A (Bookmarks CRUD) is the largest Phase 2 surface (complexity M, largest route+spec surface area) and therefore the last session expected to complete, making it the tail of the critical path. Total estimated length: ~7 hours.

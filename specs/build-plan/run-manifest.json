@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "generatedAt": "2026-06-03T05:24:09.889Z",
-  "integrationCmd": "bundle exec rspec tests/integration",
+  "generatedAt": "2026-06-03T11:48:19.680Z",
+  "integrationCmd": "bundle exec rspec tests/integration/harness_spec.rb",
   "waves": [
     {
       "kind": "feature",
@@ -9,25 +9,30 @@
       "sessions": [
         {
           "id": "S0-A",
-          "brief": "section5-briefs/S0-A-Phase-0-harness-+-Sinatra-scaffold.md",
+          "brief": "section5-briefs/S0-A-Scaffold-+-Integration-Harness.md",
           "ownedFiles": [
             "Gemfile",
             "spec/spec_helper.rb",
             "tests/integration/harness_spec.rb",
-            "tests/integration/.keep",
             "app/app.rb",
-            "config.ru",
-            ".rspec",
-            "Rakefile"
+            ".rspec"
           ],
           "test": {
-            "cmd": "bundle exec rspec tests/integration",
+            "cmd": "bundle exec rspec tests/integration/harness_spec.rb",
             "file": "tests/integration/harness_spec.rb"
           },
-          "checkpoint": "Running `bundle exec rspec tests/integration` from a fresh clone with Postgres reachable boots Bookmarks::App, provisions the bookmarks and bookmark_tags tables once, and exits 0 with a passing harness spec that confirms unknown routes return 404 with a JSON `{ \"error\": ... }` body.",
+          "checkpoint": "On a fresh clone, `bundle exec rspec tests/integration` exits 0 and an unknown route on Bookmarks::App returns HTTP 404 with a JSON `{\"error\":\"not found\"}` body.",
           "manualAcs": [],
           "requiresHumanReview": false,
-          "complexity": "M"
+          "complexity": "M",
+          "sharedResources": [
+            {
+              "name": "fixture-postgres",
+              "kind": "database",
+              "coordination": "run-once",
+              "note": "Phase 0 declares it but does not connect; provisioned once by harness; S1-A is first consumer."
+            }
+          ]
         }
       ]
     },
@@ -35,7 +40,7 @@
       "kind": "integration",
       "phase": "integration-0",
       "test": {
-        "cmd": "bundle exec rspec tests/integration"
+        "cmd": "bundle exec rspec tests/integration/harness_spec.rb"
       }
     },
     {
@@ -44,7 +49,7 @@
       "sessions": [
         {
           "id": "S1-A",
-          "brief": "section5-briefs/S1-A-Store-(Postgres-CRUD).md",
+          "brief": "section5-briefs/S1-A-Bookmark-Store-(Postgres).md",
           "ownedFiles": [
             "app/store.rb",
             "tests/integration/store_spec.rb"
@@ -53,10 +58,18 @@
             "cmd": "bundle exec rspec tests/integration/store_spec.rb",
             "file": "tests/integration/store_spec.rb"
           },
-          "checkpoint": "Calling Store.new.create(url:, title:, tags:) returns a {id:, url:, title:, tags:} hash and the row is persisted in Postgres.",
+          "checkpoint": "Running `bundle exec rspec tests/integration/store_spec.rb` exits 0 and `Store#create/#all/#find/#delete` round-trip bookmark rows against the fixture Postgres.",
           "manualAcs": [],
           "requiresHumanReview": false,
-          "complexity": "L"
+          "complexity": "M",
+          "sharedResources": [
+            {
+              "name": "fixture-postgres",
+              "kind": "database",
+              "coordination": "idempotent",
+              "note": "Schema bootstrap uses CREATE TABLE IF NOT EXISTS; tests isolate via TRUNCATE … RESTART IDENTITY CASCADE in before(:each). Postgres itself is provisioned run-once by the Phase 0 harness."
+            }
+          ]
         }
       ]
     },
@@ -64,7 +77,7 @@
       "kind": "integration",
       "phase": "integration-1",
       "test": {
-        "cmd": "bundle exec rspec tests/integration"
+        "cmd": "bundle exec rspec tests/integration/harness_spec.rb"
       }
     },
     {
@@ -73,7 +86,7 @@
       "sessions": [
         {
           "id": "S2-A",
-          "brief": "section5-briefs/S2-A-Bookmarks-routes-(POSTGETDELETE).md",
+          "brief": "section5-briefs/S2-A-Bookmarks-CRUD-Routes.md",
           "ownedFiles": [
             "app/routes/bookmarks.rb",
             "tests/integration/bookmarks_spec.rb"
@@ -82,14 +95,22 @@
             "cmd": "bundle exec rspec tests/integration/bookmarks_spec.rb",
             "file": "tests/integration/bookmarks_spec.rb"
           },
-          "checkpoint": "POST /bookmarks, GET /bookmarks, and DELETE /bookmarks/:id are fully functional — a client can create a bookmark and receive 201, list all bookmarks and receive 200 with a JSON array, and delete a bookmark and receive 204 with the record removed.",
+          "checkpoint": "POST /bookmarks, GET /bookmarks, and DELETE /bookmarks/:id all respond with correct HTTP status codes and JSON bodies against the fixture Postgres, verified by bundle exec rspec tests/integration/bookmarks_spec.rb exiting 0 with all examples passing.",
           "manualAcs": [],
           "requiresHumanReview": false,
-          "complexity": "M"
+          "complexity": "M",
+          "sharedResources": [
+            {
+              "name": "fixture-postgres",
+              "kind": "database",
+              "coordination": "run-once",
+              "note": "Schema migrations run once by the Phase 0 harness before any parallel session; this session cleans up its own rows in before(:each) hooks to avoid collision with sibling sessions."
+            }
+          ]
         },
         {
           "id": "S2-B",
-          "brief": "section5-briefs/S2-B-Tags-routes-(POST-tag,-GET-tags).md",
+          "brief": "section5-briefs/S2-B-Tag-Routes.md",
           "ownedFiles": [
             "app/routes/tags.rb",
             "tests/integration/tags_spec.rb"
@@ -98,27 +119,22 @@
             "cmd": "bundle exec rspec tests/integration/tags_spec.rb",
             "file": "tests/integration/tags_spec.rb"
           },
-          "checkpoint": "POST /bookmarks/1/tags with {\"tag\":\"ruby\"} returns 200 with the full updated bookmark including tags:[\"ruby\"], and GET /tags returns [\"ruby\"], verified by bundle exec rspec tests/integration/tags_spec.rb exiting 0.",
+          "checkpoint": "POST /bookmarks/:id/tags returns HTTP 200 with the updated bookmark and its new tag, and GET /tags returns HTTP 200 with a JSON array containing the created tag.",
           "manualAcs": [],
           "requiresHumanReview": false,
-          "complexity": "M"
-        }
-      ]
-    },
-    {
-      "kind": "integration",
-      "phase": "integration-2",
-      "test": {
-        "cmd": "bundle exec rspec tests/integration"
-      }
-    },
-    {
-      "kind": "feature",
-      "phase": 3,
-      "sessions": [
+          "complexity": "M",
+          "sharedResources": [
+            {
+              "name": "fixture-postgres",
+              "kind": "database",
+              "coordination": "run-once",
+              "note": "Postgres fixture provisioned once by the Phase 0 harness (S0-A) before any parallel session runs; this session uses isolated rows with unique URLs and cleans up in after hooks."
+            }
+          ]
+        },
         {
-          "id": "S3-A",
-          "brief": "section5-briefs/S3-A-Health-route.md",
+          "id": "S2-C",
+          "brief": "section5-briefs/S2-C-Health-Route.md",
           "ownedFiles": [
             "app/routes/health.rb",
             "tests/integration/health_spec.rb"
@@ -127,14 +143,14 @@
             "cmd": "bundle exec rspec tests/integration/health_spec.rb",
             "file": "tests/integration/health_spec.rb"
           },
-          "checkpoint": "GET /health returns 200 with body {\"status\":\"ok\"} and Content-Type: application/json on the running Canary Bookmarks API server.",
+          "checkpoint": "GET /health returns HTTP 200 with JSON body {\"status\":\"ok\"}, confirming application liveness.",
           "manualAcs": [],
           "requiresHumanReview": false,
           "complexity": "S"
         },
         {
-          "id": "S3-B",
-          "brief": "section5-briefs/S3-B-Status-route-(brand-color).md",
+          "id": "S2-D",
+          "brief": "section5-briefs/S2-D-Status-Route-(brand_color).md",
           "ownedFiles": [
             "app/routes/status.rb",
             "tests/integration/status_spec.rb"
@@ -143,23 +159,31 @@
             "cmd": "bundle exec rspec tests/integration/status_spec.rb",
             "file": "tests/integration/status_spec.rb"
           },
-          "checkpoint": "GET /status returns HTTP 200 application/json with a body containing version (String), uptime_seconds (Numeric >= 0), and brand_color (String).",
+          "checkpoint": "GET /status returns 200 application/json with body containing version (non-empty string), uptime_seconds (non-negative number), and brand_color: \"#ff5d8f\", verified green by bundle exec rspec tests/integration/status_spec.rb.",
           "manualAcs": [
             {
               "id": "US-006-AC-2",
-              "text": "The response body contains brand_color with the exact value \"#ff5d8f\", matching the brand guideline."
+              "text": "Parsed JSON contains key \"brand_color\" with value exactly \"#ff5d8f\" (canary pink). Human verifier must confirm the hex renders correctly in the response and matches brand guidelines. WCAG AA pairing: #ff5d8f background with #3a0a1c text."
             }
           ],
           "requiresHumanReview": true,
-          "complexity": "S"
+          "complexity": "S",
+          "sharedResources": [
+            {
+              "name": "fixture-postgres",
+              "kind": "database",
+              "coordination": "run-once",
+              "note": "Postgres provisioned once by the Phase 0 harness before any parallel session runs. This route does not access the database, but the shared service is declared for coordination completeness."
+            }
+          ]
         }
       ]
     },
     {
       "kind": "integration",
-      "phase": "integration-3",
+      "phase": "integration-2",
       "test": {
-        "cmd": "bundle exec rspec tests/integration"
+        "cmd": "bundle exec rspec tests/integration/harness_spec.rb"
       }
     }
   ],
@@ -185,7 +209,7 @@
     "projectManifest": {
       "path": "Gemfile",
       "ecosystem": "ruby",
-      "content": "# frozen_string_literal: true\n\nsource \"https://rubygems.org\"\n\nruby \"3.3\"\n\ngem \"sinatra\"\ngem \"puma\"\ngem \"pg\"\ngem \"json\"\ngem \"rackup\"\n\ngroup :development, :test do\n  gem \"rspec\"\n  gem \"rack-test\"\nend\n"
+      "content": "source 'https://rubygems.org'\n\nruby '3.3'\n\ngem 'sinatra'\ngem 'pg'\n\ngroup :development, :test do\n  gem 'rspec'\n  gem 'rack-test'\nend\n"
     },
     "services": [
       {
@@ -206,7 +230,7 @@
   "projectManifestStub": {
     "ecosystem": "ruby",
     "path": "Gemfile",
-    "content": "# frozen_string_literal: true\n\nsource \"https://rubygems.org\"\n\nruby \"3.3\"\n\ngem \"sinatra\"\ngem \"puma\"\ngem \"pg\"\ngem \"json\"\ngem \"rackup\"\n\ngroup :development, :test do\n  gem \"rspec\"\n  gem \"rack-test\"\nend\n",
+    "content": "source 'https://rubygems.org'\n\nruby '3.3'\n\ngem 'sinatra'\ngem 'pg'\n\ngroup :development, :test do\n  gem 'rspec'\n  gem 'rack-test'\nend\n",
     "seedInstallCmd": "bundle install",
     "lockfile": "Gemfile.lock",
     "dependencyCount": 0
